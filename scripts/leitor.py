@@ -276,10 +276,12 @@ def _associacoes_de_parametro(gerenciador, elemento):
 
 
 def ler_formas(doc):
-    u"""Extrusões do documento, em ordem determinística.
+    u"""Extrusões do documento (sólidas e de vazio), em ordem determinística.
 
     A ordem importa: o índice na lista é a identidade da forma para o
-    endereçamento de faces nas cotas e alinhamentos.
+    endereçamento de faces nas cotas e alinhamentos. Ordenar por ElementId dá
+    a ordem de criação, então o vazio sai depois do sólido que ele corta — que
+    é a ordem em que o construtor precisa recriá-los.
     """
     gerenciador = doc.FamilyManager
     coletor = FilteredElementCollector(doc).OfClass(Extrusion)
@@ -443,6 +445,10 @@ def extrair(doc):
         u"formas": formas,
         u"cotas": cotas,
         u"alinhamentos": alinhamentos,
+        # Assinatura geométrica da origem, tipo a tipo. É contra ISTO que o
+        # validador compara no destino — assim ele não precisa saber nada
+        # sobre a geometria da família, só se ela reproduz a mesma coisa.
+        u"medicoes": rfaspec.medir_por_tipo(doc),
         # Tudo que o leitor viu mas não soube endereçar. Nunca silencioso:
         # uma lacuna não reportada vira família incompleta entregue como boa.
         u"lacunas": lacunas,

@@ -79,11 +79,34 @@ def _pular(o_que, motivo):
 # 1. Parâmetros
 # --------------------------------------------------------------------------
 
-# Fase 0: só os tipos de dado que a fixture usa. Ampliar por fase, nunca
-# aceitar silenciosamente um tipo desconhecido. Chaves por ESPÉCIE (sem o
-# sufixo de versão, que muda entre versões do Revit).
+# Tipos de dado cobertos. Chaves por ESPÉCIE (sem o sufixo de versão, que muda
+# entre versões do Revit). Um tipo fora desta tabela NUNCA é aceito em silêncio:
+# vai para o relatório de fidelidade.
 _TIPOS_DE_DADO = {
-    rfaspec.ESPECIE_COMPRIMENTO: SpecTypeId.Length,
+    u"autodesk.spec.aec:length": SpecTypeId.Length,
+    u"autodesk.spec.aec:area": SpecTypeId.Area,
+    u"autodesk.spec.aec:volume": SpecTypeId.Volume,
+    u"autodesk.spec.aec:angle": SpecTypeId.Angle,
+    u"autodesk.spec:spec.string": SpecTypeId.String.Text,
+    u"autodesk.spec:spec.bool": SpecTypeId.Boolean.YesNo,
+    u"autodesk.spec:spec.int": SpecTypeId.Int.Integer,
+    u"autodesk.spec:spec.number": SpecTypeId.Number,
+    u"autodesk.spec.measurable:currency": SpecTypeId.Currency,
+    u"autodesk.spec.reference:material": SpecTypeId.Reference.Material,
+}
+
+# Grupos de parâmetro, por espécie de ForgeTypeId. Cosmético (só afeta onde o
+# parâmetro aparece na paleta), então cair no padrão é aceitável e não vira
+# item de relatório.
+_GRUPOS = {
+    u"autodesk.parameter.group:geometry": GroupTypeId.Geometry,
+    u"autodesk.parameter.group:constraints": GroupTypeId.Constraints,
+    u"autodesk.parameter.group:identityData": GroupTypeId.IdentityData,
+    u"autodesk.parameter.group:general": GroupTypeId.General,
+    u"autodesk.parameter.group:graphics": GroupTypeId.Graphics,
+    u"autodesk.parameter.group:materials": GroupTypeId.Materials,
+    u"autodesk.parameter.group:text": GroupTypeId.Text,
+    u"autodesk.parameter.group:visibility": GroupTypeId.Visibility,
 }
 
 # Parâmetros builtin do template (Model, Manufacturer, ...) já existem no
@@ -118,8 +141,10 @@ def construir_parametros(doc, especificacao):
                        item.get(u"tipo_de_dado")))
             continue
 
+        grupo = _GRUPOS.get(rfaspec.especie_forge(item.get(u"grupo")), _GRUPO_PADRAO)
+
         criado = gerenciador.AddParameter(
-            nome, _GRUPO_PADRAO, tipo_de_dado, bool(item.get(u"de_instancia"))
+            nome, grupo, tipo_de_dado, bool(item.get(u"de_instancia"))
         )
         mapa[nome] = criado
 

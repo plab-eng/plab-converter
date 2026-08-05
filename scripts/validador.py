@@ -1,13 +1,19 @@
 # -*- coding: utf-8 -*-
-u"""FASE 0 — validador: a família reconstruída flexiona?
+u"""FASE 1 — validador: a família reconstruída reproduz a origem?
 
-Roda no Revit de DESTINO. Abre o .rfa reconstruído (RFADG_ENTRADA), percorre os
-tipos e, para cada um, mede o bounding box do sólido. Se a geometria acompanha
-os valores de Largura/Profundidade/Altura de cada tipo, o flex está vivo — que
-é o critério de sucesso da Fase 0.
+Roda no Revit de DESTINO. Abre o .rfa reconstruído (RFADG_ENTRADA) e compara,
+tipo a tipo, contra a assinatura que o leitor gravou da ORIGEM no FamilySpec:
 
-Compara com os valores esperados do FamilySpec (RFADG_SPEC) e grava o veredito
-em RFADG_RELATORIO_FLEX.
+  - geometria: extensões do bounding box e volume total
+  - parâmetros: existência, tipo de dado, instância/tipo, fórmula
+  - valores: o que cada tipo atribui a cada parâmetro
+
+O validador não sabe nada sobre a geometria da família — ele só verifica que o
+destino reproduz o que a origem mediu. Isso o torna genérico: serve para
+qualquer família, não só para a fixture.
+
+A comparação de volume é o que denuncia um vazio que virou inerte: o bounding
+box fica idêntico e só o volume acusa.
 
     pyrevit run scripts/validador.py <portadora.rfa> --revit=2023
 """
@@ -22,17 +28,13 @@ sys.path.insert(0, os.path.join(_RAIZ, "pylib"))
 
 import rfaspec  # noqa: E402
 
-from Autodesk.Revit.DB import (  # noqa: E402
-    FilteredElementCollector, Extrusion, Options, Solid,
-)
-
-para_mm = rfaspec.interno_para_mm
 log = rfaspec.log
 
-# Tolerância da comparação, em mm. Regeneração envolve aritmética de ponto
-# flutuante em pés; 0,1 mm é folgado o bastante para ruído numérico e apertado
-# o bastante para pegar qualquer falha real de constraint.
+# Tolerâncias. Regeneração envolve aritmética de ponto flutuante em pés, então
+# igualdade exata não é critério honesto. 0,1 mm pega qualquer falha real de
+# constraint; 0,01% de volume pega vazio inerte sem acusar ruído numérico.
 TOLERANCIA_MM = 0.1
+TOLERANCIA_VOLUME_RELATIVA = 0.0001
 
 
 def _abrir_familia(caminho):
@@ -41,22 +43,178 @@ def _abrir_familia(caminho):
     return __revit__.Application.OpenDocumentFile(caminho)  # noqa: F821
 
 
-def _bounding_box_solido(doc):
-    u"""Extensões (dx, dy, dz) em mm do sólido da primeira extrusão."""
-    opcoes = Options()
-    opcoes.IncludeNonVisibleObjects = False
+# --------------------------------------------------------------------------
+# Geometria
+# --------------------------------------------------------------------------
 
-    for extrusao in FilteredElementCollector(doc).OfClass(Extrusion).ToElements():
-        for objeto in extrusao.get_Geometry(opcoes):
-            if isinstance(objeto, Solid) and objeto.Volume > 0:
-                caixa = objeto.GetBoundingBox()
-                return (
-                    para_mm(caixa.Max.X - caixa.Min.X),
-                    para_mm(caixa.Max.Y - caixa.Min.Y),
-                    para_mm(caixa.Max.Z - caixa.Min.Z),
-                )
+def _vazia(medicao):
+    return medicao is None or medicao.get(u"vazio")
+
+
+def _comparar_geometria(esperado, medido):
+    u"""Compara duas medições. Retorna (veredito, detalhe)."""
+    if _vazia(esperado) and _vazia(medido):
+        return u"SEM_GEOMETRIA_NOS_DOIS", None
+    if _vazia(esperado):
+        return u"GEOMETRIA_INESPERADA", u"origem não tinha sólido, destino tem"
+    if _vazia(medido):
+        return u"SEM_SOLIDO", u"destino não produziu sólido com volume"
+
+    desvios = []
+    for eixo in range(3):
+        desvios.append(abs(medido[u"extensao_mm"][eixo] - esperado[u"extensao_mm"][eixo]))
+
+    volume_esperado = esperado[u"volume_mm3"]
+    desvio_volume = abs(medido[u"volume_mm3"] - volume_esperado)
+    limite_volume = max(abs(volume_esperado) * TOLERANCIA_VOLUME_RELATIVA, 1.0)
+
+    if max(desvios) > TOLERANCIA_MM:
+        return u"GEOMETRIA_DIVERGE", u"bounding box fora da tolerância"
+    if desvio_volume > limite_volume:
+        return u"VOLUME_DIVERGE", (
+            u"bounding box bate mas volume não — sinal clássico de vazio "
+            u"presente porém inerte"
+        )
+    return u"REPRODUZ", None
+
+
+def validar_geometria(doc, especificacao):
+    esperadas = especificacao.get(u"medicoes") or {}
+    if not esperadas:
+        return [{
+            u"tipo": u"(todos)", u"veredito": u"SEM_REFERENCIA",
+            u"detalhe": u"FamilySpec não traz medições da origem",
+        }]
+
+    medidas = rfaspec.medir_por_tipo(doc)
+
+    resultados = []
+    for nome in sorted(esperadas.keys()):
+        if nome not in medidas:
+            resultados.append({
+                u"tipo": nome, u"veredito": u"TIPO_AUSENTE",
+                u"detalhe": u"tipo não existe na família reconstruída",
+            })
+            continue
+
+        esperado, medido = esperadas[nome], medidas[nome]
+        veredito, detalhe = _comparar_geometria(esperado, medido)
+
+        item = {u"tipo": nome, u"veredito": veredito}
+        if detalhe:
+            item[u"detalhe"] = detalhe
+        item[u"esperado"] = esperado
+        item[u"medido"] = medido
+        resultados.append(item)
+
+    return resultados
+
+
+# --------------------------------------------------------------------------
+# Parâmetros e valores
+# --------------------------------------------------------------------------
+
+def _valor_do_tipo(tipo_familia, parametro):
+    u"""Mesma leitura do leitor, para a comparação ser maçã com maçã."""
+    from Autodesk.Revit.DB import StorageType
+
+    if not tipo_familia.HasValue(parametro):
+        return None
+
+    armazenamento = parametro.StorageType
+    if armazenamento == StorageType.Double:
+        valor = tipo_familia.AsDouble(parametro)
+        if valor is None:
+            return None
+        if rfaspec.eh_comprimento(_forge_id(parametro.Definition.GetDataType())):
+            return rfaspec.interno_para_mm(valor)
+        return valor
+    if armazenamento == StorageType.Integer:
+        return tipo_familia.AsInteger(parametro)
+    if armazenamento == StorageType.String:
+        return tipo_familia.AsString(parametro)
     return None
 
+
+def _forge_id(forge_type_id):
+    if forge_type_id is None:
+        return None
+    try:
+        return forge_type_id.TypeId or None
+    except AttributeError:
+        return None
+
+
+def _iguais(esperado, obtido):
+    if esperado is None and obtido is None:
+        return True
+    if isinstance(esperado, float) or isinstance(obtido, float):
+        try:
+            return abs(float(esperado) - float(obtido)) <= TOLERANCIA_MM
+        except (TypeError, ValueError):
+            return False
+    return esperado == obtido
+
+
+def validar_parametros(doc, especificacao):
+    u"""Confere existência, natureza e valores por tipo. Retorna divergências."""
+    gerenciador = doc.FamilyManager
+
+    no_destino = {}
+    for parametro in gerenciador.Parameters:
+        no_destino[parametro.Definition.Name] = parametro
+
+    divergencias = []
+
+    for item in especificacao[u"parametros"]:
+        nome = item[u"nome"]
+        parametro = no_destino.get(nome)
+        if parametro is None:
+            divergencias.append({
+                u"parametro": nome, u"problema": u"AUSENTE",
+                u"detalhe": u"não existe na família reconstruída",
+            })
+            continue
+
+        if bool(parametro.IsInstance) != bool(item.get(u"de_instancia")):
+            divergencias.append({
+                u"parametro": nome, u"problema": u"NATUREZA",
+                u"detalhe": u"instância/tipo diferente da origem",
+            })
+
+        esperada = item.get(u"formula")
+        obtida = parametro.Formula
+        if (esperada or None) != (obtida or None):
+            divergencias.append({
+                u"parametro": nome, u"problema": u"FORMULA",
+                u"detalhe": u"origem={0!r} destino={1!r}".format(esperada, obtida),
+            })
+
+    tipos_no_destino = {}
+    for tipo in gerenciador.Types:
+        if tipo.Name:
+            tipos_no_destino[tipo.Name] = tipo
+
+    for tipo_spec in especificacao[u"tipos"]:
+        tipo = tipos_no_destino.get(tipo_spec[u"nome"])
+        if tipo is None:
+            continue
+        for nome, esperado in sorted(tipo_spec[u"valores"].items()):
+            parametro = no_destino.get(nome)
+            if parametro is None:
+                continue
+            obtido = _valor_do_tipo(tipo, parametro)
+            if not _iguais(esperado, obtido):
+                divergencias.append({
+                    u"parametro": nome, u"problema": u"VALOR",
+                    u"tipo": tipo_spec[u"nome"],
+                    u"detalhe": u"origem={0!r} destino={1!r}".format(esperado, obtido),
+                })
+
+    return divergencias
+
+
+# --------------------------------------------------------------------------
 
 def principal():
     entrada = rfaspec.env("RFADG_ENTRADA", obrigatorio=True)
@@ -65,80 +223,35 @@ def principal():
 
     especificacao = rfaspec.ler_json(caminho_spec)
 
-    esperados = {}
-    for tipo in especificacao[u"tipos"]:
-        valores = tipo[u"valores"]
-        if valores.get(u"Largura") is not None:
-            esperados[tipo[u"nome"]] = (
-                valores[u"Largura"], valores[u"Profundidade"], valores[u"Altura"]
-            )
-
     doc = _abrir_familia(entrada)
-    resultados = []
     try:
-        from Autodesk.Revit.DB import Transaction
-        gerenciador = doc.FamilyManager
-
-        tipos_no_doc = {}
-        for tipo in gerenciador.Types:
-            if tipo.Name:
-                tipos_no_doc[tipo.Name] = tipo
-
-        for nome, (largura, profundidade, altura) in sorted(esperados.items()):
-            tipo = tipos_no_doc.get(nome)
-            if tipo is None:
-                resultados.append({
-                    u"tipo": nome, u"veredito": u"AUSENTE",
-                    u"detalhe": u"tipo não existe na família reconstruída",
-                })
-                continue
-
-            # Trocar o tipo corrente exige transação: é isso que regenera a
-            # geometria com os valores do tipo — o flex acontecendo de fato.
-            transacao = Transaction(doc, u"RFADG — flexionar para " + nome)
-            transacao.Start()
-            gerenciador.CurrentType = tipo
-            doc.Regenerate()
-            transacao.Commit()
-
-            medido = _bounding_box_solido(doc)
-            if medido is None:
-                resultados.append({
-                    u"tipo": nome, u"veredito": u"SEM_SOLIDO",
-                    u"detalhe": u"nenhum sólido com volume encontrado",
-                })
-                continue
-
-            desvios = (
-                abs(medido[0] - largura),
-                abs(medido[1] - profundidade),
-                abs(medido[2] - altura),
-            )
-            flexionou = all(d <= TOLERANCIA_MM for d in desvios)
-
-            resultados.append({
-                u"tipo": nome,
-                u"veredito": u"FLEXIONA" if flexionou else u"ESTATICO",
-                u"esperado_mm": [largura, profundidade, altura],
-                u"medido_mm": [medido[0], medido[1], medido[2]],
-                u"desvio_mm": [desvios[0], desvios[1], desvios[2]],
-            })
+        geometria = validar_geometria(doc, especificacao)
+        parametros = validar_parametros(doc, especificacao)
     finally:
         doc.Close(False)
 
-    todos_flexionam = bool(resultados) and all(
-        item[u"veredito"] == u"FLEXIONA" for item in resultados
+    geometria_ok = bool(geometria) and all(
+        item[u"veredito"] == u"REPRODUZ" for item in geometria
     )
+    aprovada = geometria_ok and not parametros
 
     rfaspec.gravar_json(caminho_relatorio, {
-        u"fase0_aprovada": todos_flexionam,
+        u"aprovada": aprovada,
         u"tolerancia_mm": TOLERANCIA_MM,
-        u"resultados": resultados,
+        u"tolerancia_volume_relativa": TOLERANCIA_VOLUME_RELATIVA,
+        u"geometria": geometria,
+        u"divergencias_de_parametro": parametros,
     })
 
-    for item in resultados:
+    for item in geometria:
         log(u"{0}: {1}".format(item[u"tipo"], item[u"veredito"]))
-    log(u"FASE 0: {0}".format(u"APROVADA" if todos_flexionam else u"REPROVADA"))
+    if parametros:
+        log(u"Divergências de parâmetro: {0}".format(len(parametros)))
+        for item in parametros[:10]:
+            log(u"  {0} [{1}] {2}".format(
+                item[u"parametro"], item[u"problema"], item.get(u"detalhe", u"")))
+
+    log(u"VALIDAÇÃO: {0}".format(u"APROVADA" if aprovada else u"REPROVADA"))
 
 
 principal()

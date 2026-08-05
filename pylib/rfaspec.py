@@ -12,7 +12,11 @@ import os
 import re
 import json
 
-from Autodesk.Revit.DB import UnitUtils, UnitTypeId
+from Autodesk.Revit.DB import (
+    UnitUtils, UnitTypeId,
+    FilteredElementCollector, GenericForm, GeometryInstance, Options, Solid,
+    Transaction, ViewDetailLevel,
+)
 
 
 # --------------------------------------------------------------------------
@@ -40,6 +44,254 @@ def interno_para_mm(valor_interno):
     return UnitUtils.ConvertFromInternalUnits(valor_interno, UnitTypeId.Millimeters)
 
 
+def interno_para_mm3(volume_interno):
+    u"""Volume interno (pés³) -> milímetros cúbicos."""
+    return UnitUtils.ConvertFromInternalUnits(volume_interno, UnitTypeId.CubicMillimeters)
+
+
+# --------------------------------------------------------------------------
+# Medição de geometria
+#
+# Leitor e validador PRECISAM medir do mesmo jeito, senão a comparação de
+# fidelidade mede a diferença entre dois medidores em vez da diferença entre
+# duas famílias. Por isso a medição mora aqui e não em cada script.
+# --------------------------------------------------------------------------
+
+def _coletar_solidos(doc):
+    u"""Sólidos com volume das formas SÓLIDAS. Retorna (lista, diagnóstico).
+
+    Formas de vazio são ignoradas de propósito: a geometria dos sólidos já vem
+    com o corte aplicado, então somar o vazio contaria volume duas vezes.
+
+    O diagnóstico volta junto porque `print()` de script rodando sob
+    `pyrevit run` NÃO aparece na saída do CLI. Diagnóstico que não chega ao
+    disco não existe — por isso ele viaja no próprio JSON de saída.
+    """
+    diagnostico = {
+        u"elementos": 0, u"formas": 0, u"solidas": 0,
+        u"solidos_com_volume": 0, u"por_forma": [], u"erros": [],
+    }
+    solidos = []
+
+    for elemento in FilteredElementCollector(doc).WhereElementIsNotElementType().ToElements():
+        diagnostico[u"elementos"] += 1
+        if not isinstance(elemento, GenericForm):
+            continue
+        diagnostico[u"formas"] += 1
+        try:
+            if not elemento.IsSolid:
+                continue
+            diagnostico[u"solidas"] += 1
+
+            encontrados, detalhe = _solidos_da_forma(doc, elemento)
+            detalhe[u"classe"] = para_unicode(type(elemento).__name__)
+            diagnostico[u"por_forma"].append(detalhe)
+
+            for solido in encontrados:
+                diagnostico[u"solidos_com_volume"] += 1
+                solidos.append(solido)
+        except Exception as erro:
+            diagnostico[u"erros"].append(para_unicode(str(erro))[:200])
+
+    return solidos, diagnostico
+
+
+def _vista_3d(doc):
+    u"""Vista 3D do documento de família, se houver."""
+    from Autodesk.Revit.DB import View3D
+    for vista in FilteredElementCollector(doc).OfClass(View3D).ToElements():
+        if not vista.IsTemplate:
+            return vista
+    return None
+
+
+def _variantes_de_opcoes(doc):
+    u"""Combinações de Options a tentar, da mais autoritativa para a menos.
+
+    A ORDEM importa e não é chute defensivo:
+
+    - `vista_3d` vem primeiro porque geometria obtida com Options.View é
+      geometria como o Revit a desenha, ou seja, COM os cortes de vazio
+      aplicados. Geometria sem vista é a forma isolada, que ignora o corte.
+    - `referencias` é a variante comprovadamente funcional em criar_fixture.py.
+    - `fina` devolveu GeometryElement não-nulo porém VAZIO nesta medição — fica
+      por último, só como rede.
+
+    Com Options.View definido NÃO se pode definir DetailLevel (o Revit lança).
+    """
+    variantes = []
+
+    vista = _vista_3d(doc)
+    if vista is not None:
+        com_vista = Options()
+        com_vista.View = vista
+        com_vista.ComputeReferences = True
+        variantes.append((u"vista_3d", com_vista))
+
+    padrao = Options()
+    padrao.ComputeReferences = True
+    padrao.IncludeNonVisibleObjects = False
+    variantes.append((u"referencias", padrao))
+
+    simples = Options()
+    variantes.append((u"simples", simples))
+
+    fina = Options()
+    fina.IncludeNonVisibleObjects = False
+    fina.DetailLevel = ViewDetailLevel.Fine
+    variantes.append((u"fina", fina))
+
+    return variantes
+
+
+def _solidos_da_forma(doc, elemento):
+    u"""Sólidos com volume de uma forma. Retorna (lista, detalhe do diagnóstico).
+
+    Percorre também GeometryInstance: em alguns contextos a geometria vem
+    embrulhada e o Solid só aparece depois de GetInstanceGeometry().
+
+    TODAS as variantes são medidas, mesmo depois de uma dar certo, e o volume
+    de cada uma vai para o diagnóstico. É de propósito: a diferença de volume
+    entre a variante com vista e a sem vista é exatamente o que revela se um
+    vazio está cortando ou está inerte.
+    """
+    detalhe = {u"tentativas": []}
+    escolhidos = []
+
+    for rotulo, opcoes in _variantes_de_opcoes(doc):
+        try:
+            geometria = elemento.get_Geometry(opcoes)
+        except Exception as erro:
+            detalhe[u"tentativas"].append({
+                u"opcoes": rotulo, u"erro": para_unicode(str(erro))[:120]})
+            continue
+
+        if geometria is None:
+            detalhe[u"tentativas"].append({u"opcoes": rotulo, u"geometria": u"nula"})
+            continue
+
+        objetos = 0
+        encontrados = []
+        volume = 0.0
+        for objeto in geometria:
+            objetos += 1
+            for candidato in _achatar(objeto):
+                if isinstance(candidato, Solid) and candidato.Volume > 0:
+                    encontrados.append(candidato)
+                    volume += candidato.Volume
+
+        detalhe[u"tentativas"].append({
+            u"opcoes": rotulo, u"objetos": objetos, u"solidos": len(encontrados),
+            u"volume_mm3": interno_para_mm3(volume)})
+
+        if encontrados and not escolhidos:
+            detalhe[u"opcoes_que_funcionou"] = rotulo
+            escolhidos = encontrados
+
+    return escolhidos, detalhe
+
+
+def _achatar(objeto):
+    u"""Desembrulha GeometryInstance, devolvendo os objetos de dentro."""
+    if isinstance(objeto, GeometryInstance):
+        for interno in objeto.GetInstanceGeometry():
+            yield interno
+    else:
+        yield objeto
+
+
+def medir_geometria(doc):
+    u"""Extensões do bounding box (mm) e volume total (mm³) do estado atual.
+
+    Retorna None quando não há sólido — o chamador reporta como falha, nunca
+    trata ausência de geometria como se fosse geometria de tamanho zero.
+    """
+    solidos, diagnostico = _coletar_solidos(doc)
+
+    volume = 0.0
+    minimos = None
+    maximos = None
+
+    for solido in solidos:
+        volume += solido.Volume
+        caixa = solido.GetBoundingBox()
+        # A caixa vem no sistema local do sólido; transformar para o do
+        # documento antes de unir, senão sólidos com transform diferente
+        # produzem uma união sem sentido.
+        transformacao = caixa.Transform
+        for canto in _cantos(caixa):
+            ponto = transformacao.OfPoint(canto)
+            if minimos is None:
+                minimos = [ponto.X, ponto.Y, ponto.Z]
+                maximos = [ponto.X, ponto.Y, ponto.Z]
+            else:
+                for eixo, valor in enumerate((ponto.X, ponto.Y, ponto.Z)):
+                    if valor < minimos[eixo]:
+                        minimos[eixo] = valor
+                    if valor > maximos[eixo]:
+                        maximos[eixo] = valor
+
+    if minimos is None:
+        # Ausência de geometria não é geometria de tamanho zero. O diagnóstico
+        # vai junto para o chamador saber ONDE a cadeia se rompeu.
+        return {u"vazio": True, u"diagnostico": diagnostico}
+
+    return {
+        u"extensao_mm": [
+            interno_para_mm(maximos[0] - minimos[0]),
+            interno_para_mm(maximos[1] - minimos[1]),
+            interno_para_mm(maximos[2] - minimos[2]),
+        ],
+        u"volume_mm3": interno_para_mm3(volume),
+        u"diagnostico": diagnostico,
+    }
+
+
+def _cantos(caixa):
+    u"""Os 8 vértices de um BoundingBoxXYZ, em coordenadas locais."""
+    from Autodesk.Revit.DB import XYZ
+    minimo, maximo = caixa.Min, caixa.Max
+    for x in (minimo.X, maximo.X):
+        for y in (minimo.Y, maximo.Y):
+            for z in (minimo.Z, maximo.Z):
+                yield XYZ(x, y, z)
+
+
+def medir_por_tipo(doc):
+    u"""Mede a geometria em cada tipo da família. Retorna nome -> medição.
+
+    Trocar o tipo corrente exige transação: é a regeneração provocada por essa
+    troca que faz a família flexionar. Nada é salvo — a transação é revertida
+    para não sujar o documento de origem.
+    """
+    gerenciador = doc.FamilyManager
+    tipo_original = gerenciador.CurrentType
+
+    medicoes = {}
+    for tipo in gerenciador.Types:
+        if not tipo.Name:
+            continue
+        transacao = Transaction(doc, u"RFADG — medir " + tipo.Name)
+        transacao.Start()
+        try:
+            gerenciador.CurrentType = tipo
+            doc.Regenerate()
+            medicoes[tipo.Name] = medir_geometria(doc)
+        finally:
+            transacao.RollBack()
+
+    if tipo_original is not None:
+        transacao = Transaction(doc, u"RFADG — restaurar tipo")
+        transacao.Start()
+        try:
+            gerenciador.CurrentType = tipo_original
+            doc.Regenerate()
+        finally:
+            transacao.RollBack()
+
+    return medicoes
+
+
 # --------------------------------------------------------------------------
 # Entrada e saída
 #
@@ -61,16 +313,24 @@ _SUFIXO_VERSAO = re.compile(r"-\d+\.\d+\.\d+$")
 
 ESPECIE_COMPRIMENTO = u"autodesk.spec.aec:length"
 
+# Espécies cujo valor é um comprimento em unidade interna e precisa virar mm.
+# Área e volume NÃO entram: têm unidade própria e são convertidas à parte.
+_ESPECIES_COMPRIMENTO = set([ESPECIE_COMPRIMENTO])
+
 
 def especie_forge(forge_id):
-    u"""'autodesk.spec.aec:length-2.0.1' -> 'autodesk.spec.aec:length'."""
+    u"""'autodesk.spec.aec:length-2.0.1' -> 'autodesk.spec.aec:length'.
+
+    O sufixo de versão muda entre versões do Revit (2.0.0 no 2023, 2.0.1 no
+    2025), então identidade de tipo de dado compara sempre a espécie.
+    """
     if not forge_id:
         return None
     return _SUFIXO_VERSAO.sub(u"", forge_id)
 
 
 def eh_comprimento(forge_id):
-    return especie_forge(forge_id) == ESPECIE_COMPRIMENTO
+    return especie_forge(forge_id) in _ESPECIES_COMPRIMENTO
 
 
 def env(nome, padrao=None, obrigatorio=False):

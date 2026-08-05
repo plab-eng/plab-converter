@@ -32,7 +32,7 @@ import rfaspec  # noqa: E402
 
 from Autodesk.Revit.DB import (  # noqa: E402
     Transaction, XYZ, Line, Plane, SketchPlane,
-    CurveArray, CurveArrArray, ReferenceArray,
+    CurveArray, CurveArrArray, ReferenceArray, CombinableElementArray,
     FilteredElementCollector, View, ViewType,
     Options, Solid, PlanarFace,
     BuiltInParameter, SpecTypeId, GroupTypeId,
@@ -55,7 +55,13 @@ TIPOS = [
     (u"Grande", 900.0, 550.0, 1200.0),
 ]
 
-TOLERANCIA = 1.0e-6
+# Vazio central: atravessa o sólido em Z mas não encosta nas faces laterais,
+# então o bounding box não muda e só o volume denuncia se o corte sumiu na
+# reconstrução. É de propósito — separa "geometria certa" de "corte aplicado".
+VAZIO_LARGURA = 200.0
+VAZIO_PROFUNDIDADE = 150.0
+VAZIO_BASE = -100.0
+VAZIO_TOPO = 1400.0
 
 
 def _obter_app():
@@ -166,6 +172,20 @@ def _alinhar_face_ao_plano(doc, vista, plano, extrusao, normal):
     doc.FamilyCreate.NewAlignment(vista, plano.GetReference(), faces[0].Reference)
 
 
+def _cortar(doc, solido, vazio):
+    u"""Aplica o vazio sobre o sólido (equivalente ao Cut Geometry da UI).
+
+    Uma forma de vazio criada pela API não corta automaticamente: sem esta
+    combinação a família fica com o vazio presente porém inerte, e o volume
+    sai igual ao do sólido cheio.
+    """
+    combinaveis = CombinableElementArray()
+    combinaveis.Append(solido)
+    combinaveis.Append(vazio)
+    doc.CombineElements(combinaveis)
+    doc.Regenerate()
+
+
 def _perfil_retangular(largura_mm, profundidade_mm):
     u"""Perfil retangular centrado na origem, no plano XY."""
     meia_largura = mm(largura_mm / 2.0)
@@ -187,9 +207,38 @@ def _perfil_retangular(largura_mm, profundidade_mm):
     return perfil
 
 
-def _adicionar_parametro_comprimento(gerenciador, nome):
-    u"""Parâmetro de família de tipo, categoria Comprimento, grupo Cotas."""
-    return gerenciador.AddParameter(nome, GroupTypeId.Geometry, SpecTypeId.Length, False)
+def _adicionar_parametro_comprimento(gerenciador, nome, de_instancia=False):
+    u"""Parâmetro de família, categoria Comprimento, grupo Cotas."""
+    return gerenciador.AddParameter(
+        nome, GroupTypeId.Geometry, SpecTypeId.Length, de_instancia
+    )
+
+
+def _criar_parametros_variados(gerenciador):
+    u"""Parâmetros não-dimensionais que a Fase 1 precisa saber reproduzir.
+
+    Cada um exercita um caminho diferente do construtor: tipo de dado distinto,
+    parâmetro de instância, e fórmula (que não pode receber Set direto).
+    """
+    criados = {}
+
+    criados[u"Espessura"] = gerenciador.AddParameter(
+        u"Espessura", GroupTypeId.Geometry, SpecTypeId.Length, True  # instância
+    )
+    criados[u"Fabricante"] = gerenciador.AddParameter(
+        u"Fabricante", GroupTypeId.IdentityData, SpecTypeId.String.Text, False
+    )
+    criados[u"Estrutural"] = gerenciador.AddParameter(
+        u"Estrutural", GroupTypeId.Constraints, SpecTypeId.Boolean.YesNo, False
+    )
+    criados[u"Quantidade"] = gerenciador.AddParameter(
+        u"Quantidade", GroupTypeId.IdentityData, SpecTypeId.Int.Integer, False
+    )
+    criados[u"Area_Base"] = gerenciador.AddParameter(
+        u"Area_Base", GroupTypeId.Geometry, SpecTypeId.Area, False
+    )
+
+    return criados
 
 
 def construir(doc):
@@ -201,6 +250,7 @@ def construir(doc):
     par_largura = _adicionar_parametro_comprimento(gerenciador, u"Largura")
     par_profundidade = _adicionar_parametro_comprimento(gerenciador, u"Profundidade")
     par_altura = _adicionar_parametro_comprimento(gerenciador, u"Altura")
+    variados = _criar_parametros_variados(gerenciador)
 
     # Um documento recém-criado a partir de template NÃO tem nenhum tipo, e
     # FamilyManager.Set exige um tipo corrente ("There is no current type").
@@ -210,6 +260,9 @@ def construir(doc):
     gerenciador.Set(par_largura, mm(LARGURA_NOMINAL))
     gerenciador.Set(par_profundidade, mm(PROFUNDIDADE_NOMINAL))
     gerenciador.Set(par_altura, mm(ALTURA_NOMINAL))
+
+    # Fórmula depois dos parâmetros que ela referencia existirem.
+    gerenciador.SetFormula(variados[u"Area_Base"], u"Largura * Profundidade")
 
     # 2. Esqueleto: os planos de referência que a geometria vai seguir.
     plano_esq = _criar_plano_referencia(doc, vista, u"Esq", u"X", -LARGURA_NOMINAL / 2.0)
@@ -259,15 +312,34 @@ def construir(doc):
     gerenciador.AssociateElementParameterToFamilyParameter(par_fim, par_altura)
     doc.Regenerate()
 
-    # 7. Tipos.
+    # 7. Vazio. Criado depois do sólido para que o corte tenha o que cortar.
+    vazio = doc.FamilyCreate.NewExtrusion(
+        False,  # isSolid=False -> forma de vazio
+        _perfil_retangular(VAZIO_LARGURA, VAZIO_PROFUNDIDADE),
+        SketchPlane.Create(doc, Plane.CreateByNormalAndOrigin(XYZ.BasisZ, XYZ.Zero)),
+        mm(VAZIO_TOPO),
+    )
+    vazio.get_Parameter(BuiltInParameter.EXTRUSION_START_PARAM).Set(mm(VAZIO_BASE))
+    doc.Regenerate()
+
+    # Vazio criado pela API não corta sozinho: é preciso combinar explicitamente
+    # com o sólido, equivalente ao "Cut Geometry" do Family Editor.
+    _cortar(doc, extrusao, vazio)
+
+    # 8. Tipos.
     for nome, largura, profundidade, altura in TIPOS:
         gerenciador.NewType(nome)
         gerenciador.Set(par_largura, mm(largura))
         gerenciador.Set(par_profundidade, mm(profundidade))
         gerenciador.Set(par_altura, mm(altura))
+        gerenciador.Set(variados[u"Espessura"], mm(25.0))
+        gerenciador.Set(variados[u"Fabricante"], u"P-LAB Engenharia")
+        gerenciador.Set(variados[u"Estrutural"], 1)
+        gerenciador.Set(variados[u"Quantidade"], len(nome))
 
     doc.Regenerate()
-    log(u"Fixture construída: {0} tipos, 4 planos, 1 extrusão.".format(len(TIPOS)))
+    log(u"Fixture construída: {0} tipos, 4 planos, 1 sólido, 1 vazio.".format(
+        len(TIPOS) + 1))
 
 
 def principal():
