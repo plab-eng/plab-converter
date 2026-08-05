@@ -101,35 +101,33 @@ cota do outro lado é preciso reencontrar as mesmas referências. O contrato:
 Se um endereço não for reencontrável, entra em `lacunas` no FamilySpec e é
 reportado. Nunca falhar em silêncio.
 
-## 6. Estado atual (Fase 0)
+## 6. Estado atual
 
-### Funciona — verificado rodando
+### ✅ FASE 0 APROVADA — 2026-08-05
 
-O `criar_fixture.py` gerou uma família paramétrica completa no Revit 2025.
-Isso valida **toda a superfície de API que o construtor vai precisar**:
+**A tese está provada.** Ciclo completo rodou de ponta a ponta:
 
-- `NewFamilyDocument` a partir de template resolvido
-- `FamilyManager.AddParameter` / `NewType` / `Set`
-- `NewReferencePlane` com nomes canônicos
-- **`NewDimension` + `dim.FamilyLabel = parâmetro`** ← a peça central
-- `NewExtrusion`
-- **`NewAlignment`** travando faces do sólido nos planos de referência
-- `AssociateElementParameterToFamilyParameter` (altura da extrusão)
-- `SaveAs`
+```
+fixture (Revit 2025) -> leitor (2025) -> FamilySpec JSON ->
+construtor (Revit 2023) -> validador (2023)
+```
 
-### Em andamento
+Veredito do validador (`out/relatorio_flex.json`): os **4 tipos FLEXIONAM**
+no Revit 2023 com desvio 0,000 mm — Pequeno 400×300×700, Medio 600×400×900,
+Grande 900×550×1200. Uma família criada no 2025 virou um `.rfa` nativo 2023
+com parâmetros, tipos, cotas rotuladas e alinhamentos vivos.
 
-`leitor.py` — extração roda inteira; ajustando serialização.
+O que sobrou fora da cobertura (11 itens no `relatorio_fidelidade.json`):
+parâmetros builtin do template (strings/moeda/imagem — Manufacturer, Cost,
+Keynote etc.) e um plano não-canônico do template. Tudo assunto da Fase 1,
+sem impacto no flex.
 
-### Ainda não escrito
+### Próximo passo
 
-`construtor.py`, `validador.py`.
-
-### Não validado ainda
-
-**A família reconstruída flexiona no destino?** Esse é o critério de sucesso da
-Fase 0 e ainda não foi testado. Nada aqui prova a tese até que um `.rfa` gerado
-pelo construtor abra no Revit 2023 e mude de geometria ao trocar de tipo.
+Fase 1: ampliar cobertura de tipos de dado (`_TIPOS_DE_DADO` no construtor),
+demais formas (blend, revolve, sweep, swept blend, voids), fórmulas com
+dependências, e a matriz de flex do validador (hoje mede bounding box da
+extrusão; precisa medir volume e cobrir min/max além dos tipos).
 
 ## 7. Armadilhas já pagas — NÃO repetir
 
@@ -178,10 +176,16 @@ pelo construtor abra no Revit 2023 e mude de geometria ao trocar de tipo.
     de nome — nunca caminho fixo.
 11. **`ElementId.IntegerValue` foi deprecado no Revit 2024+** em favor de
     `.Value`. Usar helper com fallback, porque o código roda de 2023 a 2026.
+12. **O sufixo de versão do ForgeTypeId muda entre versões do Revit.**
+    `autodesk.spec.aec:length-2.0.0` no 2023, `...-2.0.1` no 2025. Identidade
+    de tipo de dado compara a ESPÉCIE (`rfaspec.especie_forge`, sem o sufixo),
+    nunca a string inteira. A comparação inteira fez o construtor pular os
+    parâmetros dimensionais e o leitor gravar comprimentos em pés — pego pelo
+    relatório de fidelidade na primeira rodada.
 
 ### IronPython 2.7 / encoding
 
-12. **`json.dumps` da stdlib é INUTILIZÁVEL no engine do `pyrevit run` com
+13. **`json.dumps` da stdlib é INUTILIZÁVEL no engine do `pyrevit run` com
     texto acentuado.** Causa raiz (diagnóstico via 4 iterações falhas):
     em IronPython 2.7 `str` e `unicode` são o MESMO tipo (System.String);
     o encoder da stdlib faz `isinstance(s, str)` + `s.decode('utf-8')` sobre
@@ -193,10 +197,10 @@ pelo construtor abra no Revit 2023 e mude de geometria ao trocar de tipo.
     nada — o decode fatal é DENTRO do encoder. **Solução: emissor JSON próprio
     em `rfaspec.py` (`json_para_texto`), zero codecs, escapes `\uXXXX` na mão.**
     Nunca reintroduzir `json.dumps` neste código.
-13. **Nenhum `.decode()`/`.encode()` em código que roda no `pyrevit run`.**
+14. **Nenhum `.decode()`/`.encode()` em código que roda no `pyrevit run`.**
     Qualquer um pode estourar no registry incompleto. Conversão de bytes para
     unicode é feita por `unichr(ord(c))` (semântica latin-1, sem codec).
-14. Regras gerais: `# -*- coding: utf-8 -*-`, strings acentuadas como `u"..."`,
+15. Regras gerais: `# -*- coding: utf-8 -*-`, strings acentuadas como `u"..."`,
     sem f-strings, sem type hints, `super(Classe, self)`.
 
 ## 8. Decisões e porquês
