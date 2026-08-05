@@ -194,10 +194,24 @@ extrusão; precisa medir volume e cobrir min/max além dos tipos).
     nunca a string inteira. A comparação inteira fez o construtor pular os
     parâmetros dimensionais e o leitor gravar comprimentos em pés — pego pelo
     relatório de fidelidade na primeira rodada.
+13. **`get_Geometry` é cacheado por elemento: a PRIMEIRA chamada manda.**
+    Chamadas seguintes com `Options` diferentes devolvem o cache da primeira
+    até a próxima regeneração. E `Options.View` em sessão headless
+    (`pyrevit run`) devolve enumeração VAZIA sem erro — a vista nunca foi
+    exibida, os gráficos dela nunca foram gerados. Combinado: uma chamada com
+    `Options.View` primeiro envenenou todas as variantes seguintes do mesmo
+    elemento e pareceu bug não-determinístico. Nunca usar `Options.View` na
+    medição; uma chamada por elemento, com a variante boa primeiro.
+14. **O corte de vazio (`doc.CombineElements`) NÃO aparece na geometria da
+    forma membra.** A Extrusion cortada continua devolvendo o sólido CHEIO
+    (594e6 mm³ em vez de 558e6). A geometria líquida mora no elemento
+    `GeomCombination` criado pelo CombineElements. Medição correta: sólidos
+    dos GeomCombination + formas sólidas fora de combinação; formas membras
+    são puladas (senão conta o volume sem corte por cima do cortado).
 
 ### IronPython 2.7 / encoding
 
-13. **`json.dumps` da stdlib é INUTILIZÁVEL no engine do `pyrevit run` com
+15. **`json.dumps` da stdlib é INUTILIZÁVEL no engine do `pyrevit run` com
     texto acentuado.** Causa raiz (diagnóstico via 4 iterações falhas):
     em IronPython 2.7 `str` e `unicode` são o MESMO tipo (System.String);
     o encoder da stdlib faz `isinstance(s, str)` + `s.decode('utf-8')` sobre
@@ -209,10 +223,10 @@ extrusão; precisa medir volume e cobrir min/max além dos tipos).
     nada — o decode fatal é DENTRO do encoder. **Solução: emissor JSON próprio
     em `rfaspec.py` (`json_para_texto`), zero codecs, escapes `\uXXXX` na mão.**
     Nunca reintroduzir `json.dumps` neste código.
-14. **Nenhum `.decode()`/`.encode()` em código que roda no `pyrevit run`.**
+16. **Nenhum `.decode()`/`.encode()` em código que roda no `pyrevit run`.**
     Qualquer um pode estourar no registry incompleto. Conversão de bytes para
     unicode é feita por `unichr(ord(c))` (semântica latin-1, sem codec).
-15. Regras gerais: `# -*- coding: utf-8 -*-`, strings acentuadas como `u"..."`,
+17. Regras gerais: `# -*- coding: utf-8 -*-`, strings acentuadas como `u"..."`,
     sem f-strings, sem type hints, `super(Classe, self)`.
 
 ## 8. Decisões e porquês

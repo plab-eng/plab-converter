@@ -14,8 +14,8 @@ import json
 
 from Autodesk.Revit.DB import (
     UnitUtils, UnitTypeId,
-    FilteredElementCollector, GenericForm, GeometryInstance, Options, Solid,
-    Transaction, ViewDetailLevel,
+    FilteredElementCollector, GenericForm, GeomCombination, GeometryInstance,
+    Options, Solid, Transaction, ViewDetailLevel,
 )
 
 
@@ -49,6 +49,18 @@ def interno_para_mm3(volume_interno):
     return UnitUtils.ConvertFromInternalUnits(volume_interno, UnitTypeId.CubicMillimeters)
 
 
+def id_inteiro(element_id):
+    u"""Valor numérico de um ElementId, compatível de 2023 a 2026.
+
+    Revit 2024+ expõe `.Value` (long) e deprecou `.IntegerValue`; o 2023 só
+    tem `.IntegerValue`. Tentar `.Value` primeiro e cair para o legado.
+    """
+    try:
+        return int(element_id.Value)
+    except AttributeError:
+        return int(element_id.IntegerValue)
+
+
 # --------------------------------------------------------------------------
 # Medição de geometria
 #
@@ -58,10 +70,23 @@ def interno_para_mm3(volume_interno):
 # --------------------------------------------------------------------------
 
 def _coletar_solidos(doc):
-    u"""Sólidos com volume das formas SÓLIDAS. Retorna (lista, diagnóstico).
+    u"""Sólidos com volume da geometria LÍQUIDA. Retorna (lista, diagnóstico).
 
-    Formas de vazio são ignoradas de propósito: a geometria dos sólidos já vem
-    com o corte aplicado, então somar o vazio contaria volume duas vezes.
+    Armadilha paga (execução A, volume 594e6 em vez de 558e6): quando um vazio
+    corta um sólido via `doc.CombineElements` (o "Cut Geometry" da API), o
+    resultado do corte NÃO aparece na geometria da forma membra. A Extrusion
+    membra continua devolvendo o próprio sólido CHEIO; a geometria líquida
+    (sólido menos vazio) mora no elemento `GeomCombination` que o
+    CombineElements criou. Por isso a coleta é em duas passadas:
+
+      1. GeomCombination — carrega o corte aplicado; é a geometria que o
+         usuário vê no Revit.
+      2. GenericForm sólida FORA de combinação — formas nunca combinadas
+         medem por si mesmas, como antes.
+
+    Formas membras de combinação são puladas: medi-las somaria o volume sem
+    corte por cima do volume cortado da combinação. Formas de vazio caem no
+    filtro IsSolid, como sempre.
 
     O diagnóstico volta junto porque `print()` de script rodando sob
     `pyrevit run` NÃO aparece na saída do CLI. Diagnóstico que não chega ao
@@ -69,10 +94,34 @@ def _coletar_solidos(doc):
     """
     diagnostico = {
         u"elementos": 0, u"formas": 0, u"solidas": 0,
+        u"combinacoes": 0, u"membros_pulados": 0,
         u"solidos_com_volume": 0, u"por_forma": [], u"erros": [],
     }
     solidos = []
 
+    # Passada 1: combinações (corte de vazio aplicado).
+    ids_membros = set()
+    for combinacao in FilteredElementCollector(doc).OfClass(GeomCombination):
+        diagnostico[u"combinacoes"] += 1
+        try:
+            for membro in combinacao.AllMembers:
+                ids_membros.add(id_inteiro(membro.Id))
+        except Exception as erro:
+            # Sem a lista de membros não dá para deduplicar com segurança;
+            # registrar alto e claro em vez de arriscar volume dobrado.
+            diagnostico[u"erros"].append(
+                u"GeomCombination.AllMembers: " + para_unicode(str(erro))[:200])
+        try:
+            encontrados, detalhe = _solidos_da_forma(combinacao)
+            detalhe[u"classe"] = para_unicode(type(combinacao).__name__)
+            diagnostico[u"por_forma"].append(detalhe)
+            for solido in encontrados:
+                diagnostico[u"solidos_com_volume"] += 1
+                solidos.append(solido)
+        except Exception as erro:
+            diagnostico[u"erros"].append(para_unicode(str(erro))[:200])
+
+    # Passada 2: formas sólidas que não pertencem a combinação nenhuma.
     for elemento in FilteredElementCollector(doc).WhereElementIsNotElementType().ToElements():
         diagnostico[u"elementos"] += 1
         if not isinstance(elemento, GenericForm):
@@ -83,7 +132,11 @@ def _coletar_solidos(doc):
                 continue
             diagnostico[u"solidas"] += 1
 
-            encontrados, detalhe = _solidos_da_forma(doc, elemento)
+            if id_inteiro(elemento.Id) in ids_membros or _em_combinacao(elemento):
+                diagnostico[u"membros_pulados"] += 1
+                continue
+
+            encontrados, detalhe = _solidos_da_forma(elemento)
             detalhe[u"classe"] = para_unicode(type(elemento).__name__)
             diagnostico[u"por_forma"].append(detalhe)
 
@@ -96,37 +149,51 @@ def _coletar_solidos(doc):
     return solidos, diagnostico
 
 
-def _vista_3d(doc):
-    u"""Vista 3D do documento de família, se houver."""
-    from Autodesk.Revit.DB import View3D
-    for vista in FilteredElementCollector(doc).OfClass(View3D).ToElements():
-        if not vista.IsTemplate:
-            return vista
-    return None
+def _em_combinacao(forma):
+    u"""True se a forma pertence a alguma GeomCombination.
+
+    Rede de segurança para o caso de AllMembers falhar em alguma versão:
+    CombinableElement.Combinations existe de 2023 a 2026. Qualquer dúvida
+    responde False — aí o conjunto ids_membros (passada 1) ainda cobre.
+    """
+    try:
+        combinacoes = forma.Combinations
+    except Exception:
+        return False
+    if combinacoes is None:
+        return False
+    try:
+        return not combinacoes.IsEmpty
+    except Exception:
+        for _ in combinacoes:
+            return True
+        return False
 
 
-def _variantes_de_opcoes(doc):
+def _variantes_de_opcoes():
     u"""Combinações de Options a tentar, da mais autoritativa para a menos.
 
-    A ORDEM importa e não é chute defensivo:
+    NUNCA usar Options.View aqui. Armadilha paga (execução B, todas as
+    variantes com objetos=0): geometria dependente de vista exige que o Revit
+    tenha gerado os gráficos daquela vista, o que nunca acontece numa sessão
+    headless do `pyrevit run` (a vista jamais é exibida) — a enumeração volta
+    vazia sem erro. E não fica nisso: o Revit CACHEIA a geometria do elemento
+    na primeira chamada de get_Geometry e serve o cache para as chamadas
+    seguintes até a próxima regeneração, mesmo com Options diferentes. Uma
+    primeira chamada com Options.View vazia envenena TODAS as variantes
+    subsequentes do mesmo elemento. O "não-determinismo" era só isto: a ordem
+    das variantes mudou.
 
-    - `vista_3d` vem primeiro porque geometria obtida com Options.View é
-      geometria como o Revit a desenha, ou seja, COM os cortes de vazio
-      aplicados. Geometria sem vista é a forma isolada, que ignora o corte.
-    - `referencias` é a variante comprovadamente funcional em criar_fixture.py.
-    - `fina` devolveu GeometryElement não-nulo porém VAZIO nesta medição — fica
-      por último, só como rede.
+    O corte de vazio não precisa de vista nenhuma: a geometria líquida vem do
+    GeomCombination (ver _coletar_solidos).
 
-    Com Options.View definido NÃO se pode definir DetailLevel (o Revit lança).
+    - `referencias` é a variante comprovadamente funcional (criar_fixture.py
+      e execução A).
+    - `simples` e `fina` ficam só como rede — e mesmo assim podem devolver o
+      cache da primeira chamada, então servem mais de diagnóstico que de
+      fallback real.
     """
     variantes = []
-
-    vista = _vista_3d(doc)
-    if vista is not None:
-        com_vista = Options()
-        com_vista.View = vista
-        com_vista.ComputeReferences = True
-        variantes.append((u"vista_3d", com_vista))
 
     padrao = Options()
     padrao.ComputeReferences = True
@@ -144,21 +211,21 @@ def _variantes_de_opcoes(doc):
     return variantes
 
 
-def _solidos_da_forma(doc, elemento):
-    u"""Sólidos com volume de uma forma. Retorna (lista, detalhe do diagnóstico).
+def _solidos_da_forma(elemento):
+    u"""Sólidos com volume de um elemento. Retorna (lista, detalhe diagnóstico).
 
-    Percorre também GeometryInstance: em alguns contextos a geometria vem
-    embrulhada e o Solid só aparece depois de GetInstanceGeometry().
+    Serve tanto para GenericForm quanto para GeomCombination. Percorre também
+    GeometryInstance: em alguns contextos a geometria vem embrulhada e o Solid
+    só aparece depois de GetInstanceGeometry().
 
-    TODAS as variantes são medidas, mesmo depois de uma dar certo, e o volume
-    de cada uma vai para o diagnóstico. É de propósito: a diferença de volume
-    entre a variante com vista e a sem vista é exatamente o que revela se um
-    vazio está cortando ou está inerte.
+    PARA na primeira variante que encontra sólido — e isso NÃO é otimização:
+    como o Revit cacheia a geometria da primeira chamada de get_Geometry (ver
+    _variantes_de_opcoes), medir "todas as variantes" não mede nada além da
+    primeira repetida. Foi exatamente o que mascarou o bug da execução B.
     """
     detalhe = {u"tentativas": []}
-    escolhidos = []
 
-    for rotulo, opcoes in _variantes_de_opcoes(doc):
+    for rotulo, opcoes in _variantes_de_opcoes():
         try:
             geometria = elemento.get_Geometry(opcoes)
         except Exception as erro:
@@ -184,11 +251,11 @@ def _solidos_da_forma(doc, elemento):
             u"opcoes": rotulo, u"objetos": objetos, u"solidos": len(encontrados),
             u"volume_mm3": interno_para_mm3(volume)})
 
-        if encontrados and not escolhidos:
+        if encontrados:
             detalhe[u"opcoes_que_funcionou"] = rotulo
-            escolhidos = encontrados
+            return encontrados, detalhe
 
-    return escolhidos, detalhe
+    return [], detalhe
 
 
 def _achatar(objeto):
@@ -261,33 +328,46 @@ def medir_por_tipo(doc):
     u"""Mede a geometria em cada tipo da família. Retorna nome -> medição.
 
     Trocar o tipo corrente exige transação: é a regeneração provocada por essa
-    troca que faz a família flexionar. Nada é salvo — a transação é revertida
-    para não sujar o documento de origem.
+    troca que faz a família flexionar. Nada é salvo — UMA transação envolve o
+    laço inteiro e é revertida uma única vez no fim.
+
+    Por que uma transação só, e não uma por tipo:
+
+    - `FamilyManager.Types` é uma coleção VIVA. Iterá-la intercalando RollBack
+      deixa handles de FamilyType (e o iterador) sujeitos a invalidação — por
+      isso a coleção é materializada numa lista Python ANTES da transação, e
+      nenhum RollBack acontece no meio do laço.
+    - O RollBack único no fim desfaz TODAS as trocas de CurrentType de uma
+      vez, restaurando o tipo original automaticamente — sem transação extra
+      de "restaurar", que também era um ponto de invalidação.
+
+    Medir com a transação PENDENTE é seguro: criar_fixture.py lê geometria de
+    extrusão no meio de transação aberta desde sempre, e a execução A mediu
+    594e6 mm³ nas mesmas condições.
     """
     gerenciador = doc.FamilyManager
-    tipo_original = gerenciador.CurrentType
+
+    # Materializa a coleção viva. O template traz um tipo anônimo (Name vazio)
+    # que não é tipo de verdade — fica de fora, como no leitor.
+    tipos = []
+    for tipo in gerenciador.Types:
+        nome = para_unicode(tipo.Name)
+        if nome:
+            tipos.append((nome, tipo))
 
     medicoes = {}
-    for tipo in gerenciador.Types:
-        if not tipo.Name:
-            continue
-        transacao = Transaction(doc, u"RFADG — medir " + tipo.Name)
-        transacao.Start()
-        try:
+    if not tipos:
+        return medicoes
+
+    transacao = Transaction(doc, u"RFADG — medir tipos")
+    transacao.Start()
+    try:
+        for nome, tipo in tipos:
             gerenciador.CurrentType = tipo
             doc.Regenerate()
-            medicoes[tipo.Name] = medir_geometria(doc)
-        finally:
-            transacao.RollBack()
-
-    if tipo_original is not None:
-        transacao = Transaction(doc, u"RFADG — restaurar tipo")
-        transacao.Start()
-        try:
-            gerenciador.CurrentType = tipo_original
-            doc.Regenerate()
-        finally:
-            transacao.RollBack()
+            medicoes[nome] = medir_geometria(doc)
+    finally:
+        transacao.RollBack()
 
     return medicoes
 

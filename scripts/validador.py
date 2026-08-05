@@ -146,12 +146,19 @@ def _forge_id(forge_type_id):
 
 
 def _iguais(esperado, obtido):
-    if esperado is None and obtido is None:
-        return True
+    u"""Compara valores de parâmetro, com tolerância para ponto flutuante.
+
+    O teste de None vem antes de tudo e cobre os dois lados: `float(None)` no
+    IronPython não levanta TypeError como no CPython — levanta
+    NullReferenceException, que não é capturada por `except (TypeError,
+    ValueError)` e derruba o validador inteiro.
+    """
+    if esperado is None or obtido is None:
+        return esperado is None and obtido is None
     if isinstance(esperado, float) or isinstance(obtido, float):
         try:
             return abs(float(esperado) - float(obtido)) <= TOLERANCIA_MM
-        except (TypeError, ValueError):
+        except Exception:
             return False
     return esperado == obtido
 
@@ -200,6 +207,11 @@ def validar_parametros(doc, especificacao):
         if tipo is None:
             continue
         for nome, esperado in sorted(tipo_spec[u"valores"].items()):
+            if esperado is None:
+                # A origem não definiu valor para este parâmetro neste tipo.
+                # Não há o que reproduzir, e o padrão que o template do destino
+                # traz ("" ou 0) não é divergência — é o mesmo "sem valor".
+                continue
             parametro = no_destino.get(nome)
             if parametro is None:
                 continue

@@ -29,7 +29,7 @@ import rfaspec  # noqa: E402
 
 from Autodesk.Revit.DB import (  # noqa: E402
     Transaction, XYZ, Line, Arc, Plane, SketchPlane,
-    CurveArray, CurveArrArray, ReferenceArray,
+    CurveArray, CurveArrArray, ReferenceArray, CombinableElementArray,
     FilteredElementCollector, View, ViewType, ReferencePlane,
     Options, Solid, PlanarFace,
     BuiltInParameter, SpecTypeId, GroupTypeId,
@@ -89,6 +89,8 @@ _TIPOS_DE_DADO = {
     u"autodesk.spec.aec:angle": SpecTypeId.Angle,
     u"autodesk.spec:spec.string": SpecTypeId.String.Text,
     u"autodesk.spec:spec.bool": SpecTypeId.Boolean.YesNo,
+    # O Revit grava inteiro de família como int64, não como int.
+    u"autodesk.spec:spec.int64": SpecTypeId.Int.Integer,
     u"autodesk.spec:spec.int": SpecTypeId.Int.Integer,
     u"autodesk.spec:spec.number": SpecTypeId.Number,
     u"autodesk.spec.measurable:currency": SpecTypeId.Currency,
@@ -148,17 +150,31 @@ def construir_parametros(doc, especificacao):
         )
         mapa[nome] = criado
 
-    # Fórmulas só depois de todos os parâmetros existirem (podem referenciar
-    # uns aos outros).
+    return mapa
+
+
+def aplicar_formulas(doc, especificacao, parametros):
+    u"""Aplica as fórmulas. Precisa rodar DEPOIS de existir pelo menos um tipo.
+
+    `SetFormula` num documento sem tipo nenhum falha com "There is no valid
+    family type" — mesma família de armadilha do `FamilyManager.Set`. E depois
+    de todos os parâmetros existirem, porque uma fórmula referencia outras.
+    """
+    gerenciador = doc.FamilyManager
+
     for item in especificacao[u"parametros"]:
         formula = item.get(u"formula")
-        if formula and item[u"nome"] in mapa:
-            try:
-                gerenciador.SetFormula(mapa[item[u"nome"]], formula)
-            except Exception as erro:
-                _pular(u"fórmula de '{0}'".format(item[u"nome"]), unicode(erro))  # noqa: F821
+        if not formula:
+            continue
+        parametro = parametros.get(item[u"nome"])
+        if parametro is None:
+            continue
+        try:
+            gerenciador.SetFormula(parametro, formula)
+        except Exception as erro:
+            _pular(u"fórmula de '{0}'".format(item[u"nome"]), unicode(erro))  # noqa: F821
 
-    return mapa
+    doc.Regenerate()
 
 
 # --------------------------------------------------------------------------
@@ -362,6 +378,32 @@ def construir_cotas(doc, vista, especificacao, planos, parametros):
     doc.Regenerate()
 
 
+def construir_combinacoes(doc, especificacao, formas):
+    u"""Reaplica os cortes de vazio da origem.
+
+    Recriar a forma de vazio não basta: sem o CombineElements o vazio fica
+    INERTE, e a família sai com o bounding box certo e o volume errado — o
+    sintoma que o validador reporta como VOLUME_DIVERGE.
+    """
+    for indice, item in enumerate(especificacao.get(u"combinacoes", [])):
+        elementos = [formas.get(posicao) for posicao in item[u"formas"]]
+        if any(elemento is None for elemento in elementos) or len(elementos) < 2:
+            _pular(u"combinação #{0}".format(indice),
+                   u"forma membro não foi reconstruída")
+            continue
+
+        combinaveis = CombinableElementArray()
+        for elemento in elementos:
+            combinaveis.Append(elemento)
+
+        try:
+            doc.CombineElements(combinaveis)
+        except Exception as erro:
+            _pular(u"combinação #{0}".format(indice), unicode(erro))  # noqa: F821
+
+    doc.Regenerate()
+
+
 def construir_alinhamentos(doc, vista, especificacao, planos, formas):
     u"""Trava as faces das formas nos planos — sem isso o parâmetro muda e o
     sólido fica parado."""
@@ -478,8 +520,15 @@ def principal():
         construir_cotas(doc, vista, especificacao, planos, parametros)
         formas = construir_formas(doc, especificacao)
         construir_alinhamentos(doc, vista, especificacao, planos, formas)
+        # Associar ANTES de combinar, espelhando a ordem da fixture (que é
+        # comprovadamente correta). Combinar primeiro deixa a geometria da
+        # combinação sem acompanhar o parâmetro associado depois: o corte
+        # encolhe conforme o tipo em vez de atravessar o sólido inteiro.
         construir_associacoes(doc, especificacao, formas, parametros)
+        construir_combinacoes(doc, especificacao, formas)
         construir_tipos(doc, especificacao, parametros)
+        # Fórmulas por último: exigem um tipo válido já existente.
+        aplicar_formulas(doc, especificacao, parametros)
 
         transacao.Commit()
     except Exception:

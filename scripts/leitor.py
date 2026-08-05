@@ -28,7 +28,7 @@ import rfaspec  # noqa: E402
 
 from Autodesk.Revit.DB import (  # noqa: E402
     FilteredElementCollector, ReferencePlane, Dimension, Extrusion,
-    Line, Arc, PlanarFace, BuiltInCategory, BuiltInParameter,
+    GeomCombination, Line, Arc, PlanarFace, BuiltInCategory, BuiltInParameter,
     StorageType,
 )
 
@@ -356,6 +356,40 @@ def _endereco_da_referencia(doc, referencia, indice_por_id):
     return None
 
 
+def ler_combinacoes(doc, indice_por_id):
+    u"""Cortes de vazio (GeomCombination) como listas de índices de forma.
+
+    Um vazio criado por API não corta sozinho: quem aplica o corte é
+    `doc.CombineElements`, que cria um GeomCombination. Sem gravar isso aqui, o
+    construtor recria o vazio mas ele fica INERTE no destino — a família sai
+    com o bounding box certo e o volume errado.
+    """
+    combinacoes = []
+    lacunas = []
+
+    for combinacao in FilteredElementCollector(doc).OfClass(GeomCombination):
+        try:
+            membros = [_id_valor(membro.Id) for membro in combinacao.AllMembers]
+        except Exception as erro:
+            lacunas.append({
+                u"elemento_id": _id_valor(combinacao.Id),
+                u"motivo": u"AllMembers falhou: {0}".format(erro),
+            })
+            continue
+
+        indices = [indice_por_id.get(identificador) for identificador in membros]
+        if any(indice is None for indice in indices):
+            lacunas.append({
+                u"elemento_id": _id_valor(combinacao.Id),
+                u"motivo": u"combinação inclui forma fora da cobertura do leitor",
+            })
+            continue
+
+        combinacoes.append({u"formas": indices})
+
+    return combinacoes, lacunas
+
+
 def ler_cotas(doc, indice_por_id):
     u"""Cotas rotuladas e restrições de alinhamento.
 
@@ -431,6 +465,8 @@ def extrair(doc):
     parametros, tipos = ler_parametros(doc)
     formas, indice_por_id = ler_formas(doc)
     cotas, alinhamentos, lacunas = ler_cotas(doc, indice_por_id)
+    combinacoes, lacunas_de_corte = ler_combinacoes(doc, indice_por_id)
+    lacunas = lacunas + lacunas_de_corte
 
     especificacao = {
         u"versao_schema": rfaspec.SCHEMA_VERSION,
@@ -445,6 +481,7 @@ def extrair(doc):
         u"formas": formas,
         u"cotas": cotas,
         u"alinhamentos": alinhamentos,
+        u"combinacoes": combinacoes,
         # Assinatura geométrica da origem, tipo a tipo. É contra ISTO que o
         # validador compara no destino — assim ele não precisa saber nada
         # sobre a geometria da família, só se ela reproduz a mesma coisa.
