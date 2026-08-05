@@ -181,12 +181,21 @@ pelo construtor abra no Revit 2023 e mude de geometria ao trocar de tipo.
 
 ### IronPython 2.7 / encoding
 
-12. **`json.dumps(ensure_ascii=False)` quebra.** Devolve bytes já codificados;
-    qualquer decode posterior cai no codepage do sistema e estoura
-    `UnicodeDecodeError` em acento. Usar `ensure_ascii=True`.
-13. **Nem toda string da API do Revit chega como unicode.** Nomes de categoria,
-    subcategoria e tipo às vezes vêm como bytes. Normalizar recursivamente
-    (UTF-8 → latin-1 como rede final) antes de serializar.
+12. **`json.dumps` da stdlib é INUTILIZÁVEL no engine do `pyrevit run` com
+    texto acentuado.** Causa raiz (diagnóstico via 4 iterações falhas):
+    em IronPython 2.7 `str` e `unicode` são o MESMO tipo (System.String);
+    o encoder da stdlib faz `isinstance(s, str)` + `s.decode('utf-8')` sobre
+    qualquer string com caractere ≥ U+0080 — um decode sobre string que já é
+    unicode. E o registry de codecs do engine embarcado é incompleto, então o
+    lookup degrada para o codec 'unknown' e estoura
+    `UnicodeDecodeError: 'unknown' codec ... byte 0xea` (`ê` de "Referência").
+    `ensure_ascii=True/False` não muda nada; sanitizar os dados antes não muda
+    nada — o decode fatal é DENTRO do encoder. **Solução: emissor JSON próprio
+    em `rfaspec.py` (`json_para_texto`), zero codecs, escapes `\uXXXX` na mão.**
+    Nunca reintroduzir `json.dumps` neste código.
+13. **Nenhum `.decode()`/`.encode()` em código que roda no `pyrevit run`.**
+    Qualquer um pode estourar no registry incompleto. Conversão de bytes para
+    unicode é feita por `unichr(ord(c))` (semântica latin-1, sem codec).
 14. Regras gerais: `# -*- coding: utf-8 -*-`, strings acentuadas como `u"..."`,
     sem f-strings, sem type hints, `super(Classe, self)`.
 
