@@ -186,6 +186,28 @@ def ler_parametros(doc):
     return parametros, tipos
 
 
+def ler_tipo_corrente(doc):
+    u"""Nome do tipo corrente — a configuração em que o spec é serializado.
+
+    Todos os valores geométricos do FamilySpec (posições de plano, perfis,
+    deslocamentos de extrusão) são lidos no estado corrente do documento, ou
+    seja, na configuração do tipo corrente. O construtor precisa recriar ESTE
+    tipo e aplicar seus valores ANTES de construir a geometria, senão
+    reconstrói coordenadas de uma configuração num documento parado em outra
+    (ou em nenhuma — documento novo não tem tipo, e foi nesse vácuo que o
+    corte de vazio perdeu o flex). Campo aditivo do schema; None quando o
+    documento não tem tipo corrente nomeado.
+    """
+    try:
+        tipo = doc.FamilyManager.CurrentType
+    except Exception:
+        return None
+    if tipo is None:
+        return None
+    nome = tipo.Name
+    return nome if nome else None
+
+
 # --------------------------------------------------------------------------
 # Esqueleto: planos de referência
 # --------------------------------------------------------------------------
@@ -477,6 +499,8 @@ def extrair(doc):
         u"identidade": ler_identidade(doc),
         u"parametros": parametros,
         u"tipos": tipos,
+        # Configuração em que TODA a geometria abaixo foi serializada.
+        u"tipo_corrente": ler_tipo_corrente(doc),
         u"planos_de_referencia": ler_planos_de_referencia(doc),
         u"formas": formas,
         u"cotas": cotas,

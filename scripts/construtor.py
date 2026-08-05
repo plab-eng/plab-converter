@@ -6,11 +6,16 @@ recebido em RFADG_TEMPLATE e reconstrói a família descrita no FamilySpec:
 planos de referência, parâmetros, cotas rotuladas, formas, alinhamentos,
 associações e tipos.
 
-A ordem de reconstrução importa e espelha a da fixture:
-  parâmetros -> planos -> cotas rotuladas -> formas -> alinhamentos ->
-  associações -> tipos
+A ordem de reconstrução importa e espelha a da fixture PASSO A PASSO:
+  parâmetros -> tipo corrente da origem (com valores) -> planos ->
+  cotas rotuladas -> [por forma, na ordem da origem: forma -> alinhamentos ->
+  associações] -> combinações -> demais tipos -> fórmulas
 Rotular a cota ANTES de alinhar a geometria: alinhar primeiro faz o Revit
-resolver a restrição contra valor fixo e a família não flexiona.
+resolver a restrição contra valor fixo e a família não flexiona. E cada forma
+é travada e associada ANTES de a próxima nascer: o esboço de uma forma sem
+restrições explícitas é posicionado por restrições automáticas que o solver
+cria conforme o estado do documento no instante da criação — criar o vazio num
+modelo ainda solto deixava o corte encolher no flex (ver construir_formas).
 
 O modelo da linha de comando é só a portadora que dá boot no Revit.
 
@@ -236,9 +241,32 @@ def _perfil_do_spec(lacos):
     return perfil
 
 
-def construir_formas(doc, especificacao):
-    u"""Recria as formas. Retorna índice -> elemento."""
+def construir_formas(doc, vista, especificacao, planos, parametros):
+    u"""Recria as formas NA ORDEM da origem, travando e associando cada uma
+    antes de criar a próxima. Retorna índice -> elemento.
+
+    Replay fiel da linha do tempo da fixture: sólido -> alinhamentos do
+    sólido -> associação da altura -> vazio -> (combinação, fora daqui).
+
+    Por que o entrelaçamento importa (bug do corte que encolhia no flex):
+    o esboço de uma forma sem restrições explícitas é posicionado por
+    restrições AUTOMÁTICAS que o solver cria com base no estado do documento
+    no instante em que a forma nasce — estado que o FamilySpec não captura,
+    porque não é legível pela API como elemento. Na fixture o vazio nasce num
+    modelo já resolvido (sólido alinhado aos planos, altura associada); na
+    versão anterior deste construtor ele nascia num modelo solto (sólido sem
+    alinhamento, parâmetros sem valor), e as âncoras automáticas do seu
+    esboço caíam em referências que se movem no flex. Resultado medido, com
+    FamilySpec idêntico ao da origem: corte inteiro num tipo, meio corte no
+    Medio, corte nenhum no Pequeno.
+    """
     mapa = {}
+    aplicados = set()
+
+    # Alinhamentos que só referenciam planos (nenhuma face de forma) vêm
+    # antes de qualquer forma, como teriam vindo na origem.
+    _aplicar_alinhamentos_elegiveis(doc, vista, especificacao, planos, mapa, aplicados)
+
     for item in especificacao[u"formas"]:
         if item[u"tipo"] != u"extrusao":
             _pular(u"forma #{0} ({1})".format(item[u"indice"], item[u"tipo"]),
@@ -251,15 +279,14 @@ def construir_formas(doc, especificacao):
         )
         plano_esboco = SketchPlane.Create(doc, plano_geometrico)
 
-        # Altura provisória = a extensão nominal da origem; a associação de
-        # parâmetro (passo 6) assume o controle em seguida.
-        altura = mm(item[u"deslocamento_final"]) - mm(item[u"deslocamento_inicial"])
-
+        # O último argumento de NewExtrusion é o OFFSET FINAL, não a altura.
+        # Passar a diferença (final - inicial) fazia o vazio terminar em 1500
+        # onde a origem terminava em 1400.
         extrusao = doc.FamilyCreate.NewExtrusion(
             bool(item[u"solido"]),
             _perfil_do_spec(item[u"perfil"]),
             plano_esboco,
-            altura,
+            mm(item[u"deslocamento_final"]),
         )
         if item[u"deslocamento_inicial"]:
             parametro = extrusao.get_Parameter(BuiltInParameter.EXTRUSION_START_PARAM)
@@ -267,8 +294,23 @@ def construir_formas(doc, especificacao):
                 parametro.Set(mm(item[u"deslocamento_inicial"]))
 
         mapa[item[u"indice"]] = extrusao
+        doc.Regenerate()
 
-    doc.Regenerate()
+        # Trava e associa ESTA forma antes de a próxima nascer, como na
+        # fixture. As cotas já estão rotuladas (armadilha conhecida: rotular
+        # antes de alinhar), e a associação vem depois do alinhamento —
+        # exatamente a sequência comprovadamente boa.
+        _aplicar_alinhamentos_elegiveis(doc, vista, especificacao, planos, mapa, aplicados)
+        _associar_parametros_da_forma(doc, item, extrusao, parametros)
+        doc.Regenerate()
+
+    # Nunca silencioso: alinhamento que ficou sem vez é porque referencia
+    # forma que não foi reconstruída.
+    for indice, item in enumerate(especificacao[u"alinhamentos"]):
+        if indice not in aplicados:
+            _pular(u"alinhamento #{0}".format(indice),
+                   u"referencia forma que não foi reconstruída")
+
     return mapa
 
 
@@ -404,10 +446,31 @@ def construir_combinacoes(doc, especificacao, formas):
     doc.Regenerate()
 
 
-def construir_alinhamentos(doc, vista, especificacao, planos, formas):
-    u"""Trava as faces das formas nos planos — sem isso o parâmetro muda e o
-    sólido fica parado."""
+def _aplicar_alinhamentos_elegiveis(doc, vista, especificacao, planos, formas, aplicados):
+    u"""Aplica os alinhamentos cujas formas referenciadas já foram criadas.
+
+    Trava as faces das formas nos planos — sem isso o parâmetro muda e o
+    sólido fica parado. Chamada uma vez após cada forma nascer: assim cada
+    alinhamento é criado o mais cedo possível, imediatamente depois da última
+    forma de que depende — a mesma posição relativa que ele ocupava na linha
+    do tempo de criação da origem. `aplicados` acumula os índices já
+    tratados entre as chamadas.
+    """
+    aplicou = False
     for indice, item in enumerate(especificacao[u"alinhamentos"]):
+        if indice in aplicados:
+            continue
+
+        pendente = False
+        for endereco in item[u"referencias"]:
+            if endereco[u"tipo"] == u"face" and endereco[u"forma"] not in formas:
+                pendente = True
+                break
+        if pendente:
+            continue  # a forma de que depende ainda não nasceu
+
+        aplicados.add(indice)
+
         resolvidas = []
         for endereco in item[u"referencias"]:
             referencia = _resolver_referencia(endereco, planos, formas)
@@ -422,8 +485,10 @@ def construir_alinhamentos(doc, vista, especificacao, planos, formas):
             continue
 
         doc.FamilyCreate.NewAlignment(vista, resolvidas[0], resolvidas[1])
+        aplicou = True
 
-    doc.Regenerate()
+    if aplicou:
+        doc.Regenerate()
 
 
 # --------------------------------------------------------------------------
@@ -436,62 +501,143 @@ _BUILTIN_ASSOCIAVEIS = {
 }
 
 
-def construir_associacoes(doc, especificacao, formas, parametros):
+def _associar_parametros_da_forma(doc, item, elemento, parametros):
+    u"""Associações de parâmetro de UMA forma (o 2º mecanismo de flex).
+
+    Rodava em passada única depois de todas as formas existirem; agora roda
+    logo após a forma nascer e ser alinhada, espelhando a fixture — na origem
+    a altura do sólido foi associada ANTES de o vazio existir.
+    """
     gerenciador = doc.FamilyManager
-    for item in especificacao[u"formas"]:
-        elemento = formas.get(item[u"indice"])
-        if elemento is None:
+    for nome_parametro, associacao in item.get(u"associacoes", {}).items():
+        builtin = _BUILTIN_ASSOCIAVEIS.get(associacao.get(u"builtin"))
+        alvo = parametros.get(associacao[u"parametro_de_familia"])
+        if builtin is None or alvo is None:
+            _pular(u"associação '{0}' da forma #{1}".format(
+                    nome_parametro, item[u"indice"]),
+                   u"builtin fora da cobertura ou parâmetro ausente")
             continue
-        for nome_parametro, associacao in item.get(u"associacoes", {}).items():
-            builtin = _BUILTIN_ASSOCIAVEIS.get(associacao.get(u"builtin"))
-            alvo = parametros.get(associacao[u"parametro_de_familia"])
-            if builtin is None or alvo is None:
-                _pular(u"associação '{0}' da forma #{1}".format(
-                        nome_parametro, item[u"indice"]),
-                       u"builtin fora da cobertura ou parâmetro ausente")
-                continue
-            parametro_elemento = elemento.get_Parameter(builtin)
-            if parametro_elemento is None:
-                _pular(u"associação '{0}'".format(nome_parametro),
-                       u"parâmetro do elemento não encontrado no destino")
-                continue
-            gerenciador.AssociateElementParameterToFamilyParameter(
-                parametro_elemento, alvo
-            )
-    doc.Regenerate()
+        parametro_elemento = elemento.get_Parameter(builtin)
+        if parametro_elemento is None:
+            _pular(u"associação '{0}'".format(nome_parametro),
+                   u"parâmetro do elemento não encontrado no destino")
+            continue
+        gerenciador.AssociateElementParameterToFamilyParameter(
+            parametro_elemento, alvo
+        )
 
 
-def construir_tipos(doc, especificacao, parametros):
-    u"""Recria os tipos com os valores por parâmetro (mm -> interno)."""
-    gerenciador = doc.FamilyManager
-
-    de_comprimento = set()
+def _nomes_de_comprimento(especificacao):
+    u"""Nomes dos parâmetros de comprimento — o spec grava esses em mm."""
+    nomes = set()
     for item in especificacao[u"parametros"]:
         if rfaspec.eh_comprimento(item.get(u"tipo_de_dado")):
-            de_comprimento.add(item[u"nome"])
+            nomes.add(item[u"nome"])
+    return nomes
+
+
+def _aplicar_valores_do_tipo(gerenciador, tipo, parametros, de_comprimento):
+    u"""Aplica os valores de um tipo ao tipo CORRENTE (mm -> interno)."""
+    for nome, valor in tipo[u"valores"].items():
+        if valor is None:
+            continue
+        parametro = parametros.get(nome)
+        if parametro is None or parametro.IsDeterminedByFormula:
+            continue
+        try:
+            if nome in de_comprimento:
+                gerenciador.Set(parametro, mm(valor))
+            elif isinstance(valor, float):
+                gerenciador.Set(parametro, valor)
+            elif isinstance(valor, (int, long)):  # noqa: F821
+                gerenciador.Set(parametro, valor)
+            elif isinstance(valor, unicode):  # noqa: F821
+                gerenciador.Set(parametro, valor)
+        except Exception as erro:
+            _pular(u"valor '{0}' do tipo '{1}'".format(nome, tipo[u"nome"]),
+                   unicode(erro))  # noqa: F821
+
+
+def estabelecer_tipo_corrente(doc, especificacao, parametros):
+    u"""Cria PRIMEIRO o tipo corrente da origem, com valores, antes da geometria.
+
+    Espelha o passo 1 da fixture (NewType + Set antes de planos, cotas e
+    formas) e garante duas coisas:
+
+    - FamilyManager.Set exige tipo corrente (armadilha conhecida), então o
+      documento passa a aceitar valores desde já;
+    - o leitor serializa TODA a geometria (planos, perfis, deslocamentos) na
+      configuração do tipo corrente da origem. Reconstruir essa geometria num
+      documento parado na MESMA configuração faz plano, cota e face nascerem
+      consistentes entre si — nada flexiona durante a construção. Antes, a
+      geometria nascia num documento sem tipo nenhum e as cotas eram
+      rotuladas sobre parâmetros sem valor: um estado que a fixture nunca
+      exercitou e que deixava o solver livre para ancorar esboços onde
+      quisesse.
+
+    Retorna o nome do tipo criado, ou None se o spec não tem tipos.
+    """
+    tipos = especificacao[u"tipos"]
+    if not tipos:
+        return None
+
+    nome = especificacao.get(u"tipo_corrente")
+    tipo = None
+    for candidato in tipos:
+        if candidato[u"nome"] == nome:
+            tipo = candidato
+            break
+    if tipo is None:
+        # Spec antigo (sem tipo_corrente) ou nome não reencontrado: usar o
+        # primeiro tipo é melhor esforço — e nunca silencioso.
+        tipo = tipos[0]
+        _pular(u"tipo corrente '{0}'".format(nome),
+               u"não identificado no spec; geometria construída no tipo "
+               u"'{0}'".format(tipo[u"nome"]))
+
+    gerenciador = doc.FamilyManager
+    gerenciador.NewType(tipo[u"nome"])  # vira o tipo corrente
+    _aplicar_valores_do_tipo(gerenciador, tipo, parametros,
+                             _nomes_de_comprimento(especificacao))
+    doc.Regenerate()
+    return tipo[u"nome"]
+
+
+def construir_tipos(doc, especificacao, parametros, ja_criado=None):
+    u"""Recria os DEMAIS tipos com os valores por parâmetro (mm -> interno).
+
+    O tipo corrente da origem já foi criado antes da geometria (ver
+    estabelecer_tipo_corrente) e é pulado aqui — NewType com nome repetido
+    falha.
+    """
+    gerenciador = doc.FamilyManager
+    de_comprimento = _nomes_de_comprimento(especificacao)
 
     for tipo in especificacao[u"tipos"]:
+        if tipo[u"nome"] == ja_criado:
+            continue
         gerenciador.NewType(tipo[u"nome"])  # vira o tipo corrente
-        for nome, valor in tipo[u"valores"].items():
-            if valor is None:
-                continue
-            parametro = parametros.get(nome)
-            if parametro is None or parametro.IsDeterminedByFormula:
-                continue
-            try:
-                if nome in de_comprimento:
-                    gerenciador.Set(parametro, mm(valor))
-                elif isinstance(valor, float):
-                    gerenciador.Set(parametro, valor)
-                elif isinstance(valor, (int, long)):  # noqa: F821
-                    gerenciador.Set(parametro, valor)
-                elif isinstance(valor, unicode):  # noqa: F821
-                    gerenciador.Set(parametro, valor)
-            except Exception as erro:
-                _pular(u"valor '{0}' do tipo '{1}'".format(nome, tipo[u"nome"]),
-                       unicode(erro))  # noqa: F821
+        _aplicar_valores_do_tipo(gerenciador, tipo, parametros, de_comprimento)
 
     doc.Regenerate()
+
+
+def _restaurar_tipo_corrente(doc, nome):
+    u"""Deixa o documento salvo na mesma configuração da origem.
+
+    Cosmético para o flex, essencial para diff: o leitor rodado sobre a
+    família reconstruída serializa a geometria na configuração do tipo
+    corrente — se o destino salvar parado em outro tipo, todas as coordenadas
+    divergem e o diff de FamilySpec contra a origem vira ruído.
+    """
+    if not nome:
+        return
+    gerenciador = doc.FamilyManager
+    for tipo in gerenciador.Types:
+        if tipo.Name == nome:
+            gerenciador.CurrentType = tipo
+            doc.Regenerate()
+            return
 
 
 # --------------------------------------------------------------------------
@@ -516,19 +662,23 @@ def principal():
         vista = _vista_de_planta(doc)
 
         parametros = construir_parametros(doc, especificacao)
+        # Tipo corrente da origem PRIMEIRO: a geometria do spec foi
+        # serializada nessa configuração e é reconstruída nela — o documento
+        # nunca fica sem tipo/valores durante a construção, como na fixture.
+        tipo_corrente = estabelecer_tipo_corrente(doc, especificacao, parametros)
         planos = construir_planos(doc, vista, especificacao)
         construir_cotas(doc, vista, especificacao, planos, parametros)
-        formas = construir_formas(doc, especificacao)
-        construir_alinhamentos(doc, vista, especificacao, planos, formas)
-        # Associar ANTES de combinar, espelhando a ordem da fixture (que é
-        # comprovadamente correta). Combinar primeiro deixa a geometria da
-        # combinação sem acompanhar o parâmetro associado depois: o corte
-        # encolhe conforme o tipo em vez de atravessar o sólido inteiro.
-        construir_associacoes(doc, especificacao, formas, parametros)
+        # Cada forma nasce, é alinhada e associada antes de a próxima
+        # existir — replay da linha do tempo da fixture (ver
+        # construir_formas). O vazio só nasce com o sólido já resolvido.
+        formas = construir_formas(doc, vista, especificacao, planos, parametros)
         construir_combinacoes(doc, especificacao, formas)
-        construir_tipos(doc, especificacao, parametros)
+        construir_tipos(doc, especificacao, parametros, tipo_corrente)
         # Fórmulas por último: exigem um tipo válido já existente.
         aplicar_formulas(doc, especificacao, parametros)
+        # Salva na mesma configuração da origem, para o diff de FamilySpec
+        # comparar coordenadas maçã com maçã.
+        _restaurar_tipo_corrente(doc, tipo_corrente)
 
         transacao.Commit()
     except Exception:
