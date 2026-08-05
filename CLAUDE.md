@@ -3,6 +3,18 @@
 > Contexto completo do projeto. Leia isto antes de escrever qualquer código aqui.
 > Escrito para que uma conversa nova comece sem repetir pesquisa nem repetir erro.
 
+**Onde o projeto vive**
+
+| | |
+|---|---|
+| Repositório | `plab-eng/plab-converter` (privado) — https://github.com/plab-eng/plab-converter |
+| Working copy | `C:\Users\usuario\projetos\rfa-downgrader` |
+| Espelho de docs | `G:\Meu Drive\P-LAB\02.Projetos\01.2026-PLAB-Plugins Revit\plab-converter` |
+
+Projeto da P-LAB Engenharia, então o repositório fica **na organização
+`plab-eng`**, nunca na conta pessoal. E o git nunca mora no Google Drive — o
+sync corrompe o index; o Drive guarda só documentos e artefatos espelhados.
+
 ---
 
 ## 1. O problema
