@@ -1,0 +1,18 @@
+# Artefatos de execução (famílias geradas, specs, relatórios)
+out/
+
+# Python
+*.pyc
+__pycache__/
+
+# Revit
+*.rvt.????.rvt
+*.rfa.????.rfa
+*.slog
+*.dwl
+*.dwl2
+Journal*.txt
+
+# Windows
+Thumbs.db
+desktop.ini
