@@ -158,8 +158,8 @@ parâmetro de instância, texto, sim/não, inteiro) atravessa a conversão
 **2025 → 2023** com os 4 tipos em `REPRODUZ`, volume idêntico ao da origem:
 558M / 189M / 189M / 63M mm³.
 
-Placar da fase: divergências de parâmetro **37 → 1**, lacunas de fidelidade
-**11 → 2**.
+Placar da fase: divergências de parâmetro **37 → 0**, lacunas de fidelidade
+**11 → 1** (um plano do template que não existe no idioma do destino).
 
 O validador virou genérico: o leitor grava a assinatura geométrica da origem
 (bbox + volume por tipo) e o validador compara o destino contra ela — não sabe
