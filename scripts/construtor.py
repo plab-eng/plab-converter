@@ -80,9 +80,10 @@ def _pular(o_que, motivo):
 # --------------------------------------------------------------------------
 
 # Fase 0: só os tipos de dado que a fixture usa. Ampliar por fase, nunca
-# aceitar silenciosamente um tipo desconhecido.
+# aceitar silenciosamente um tipo desconhecido. Chaves por ESPÉCIE (sem o
+# sufixo de versão, que muda entre versões do Revit).
 _TIPOS_DE_DADO = {
-    u"autodesk.spec.aec:length-2.0.0": SpecTypeId.Length,
+    rfaspec.ESPECIE_COMPRIMENTO: SpecTypeId.Length,
 }
 
 # Parâmetros builtin do template (Model, Manufacturer, ...) já existem no
@@ -110,7 +111,7 @@ def construir_parametros(doc, especificacao):
                    u"shared parameters ficam para a Fase 1")
             continue
 
-        tipo_de_dado = _TIPOS_DE_DADO.get(item.get(u"tipo_de_dado"))
+        tipo_de_dado = _TIPOS_DE_DADO.get(rfaspec.especie_forge(item.get(u"tipo_de_dado")))
         if tipo_de_dado is None:
             _pular(u"parâmetro '{0}'".format(nome),
                    u"tipo de dado fora da cobertura da Fase 0: {0}".format(
@@ -399,7 +400,7 @@ def construir_tipos(doc, especificacao, parametros):
 
     de_comprimento = set()
     for item in especificacao[u"parametros"]:
-        if item.get(u"tipo_de_dado") == u"autodesk.spec.aec:length-2.0.0":
+        if rfaspec.eh_comprimento(item.get(u"tipo_de_dado")):
             de_comprimento.add(item[u"nome"])
 
     for tipo in especificacao[u"tipos"]:

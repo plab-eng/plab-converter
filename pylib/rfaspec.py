@@ -9,6 +9,7 @@ IronPython 2.7 — sem f-strings, sem type hints, strings com acento como u"..."
 """
 
 import os
+import re
 import json
 
 from Autodesk.Revit.DB import UnitUtils, UnitTypeId
@@ -46,6 +47,31 @@ def interno_para_mm(valor_interno):
 # repassa argv. A comunicação é por variável de ambiente, que o processo do
 # Revit herda de quem chamou o CLI.
 # --------------------------------------------------------------------------
+
+# --------------------------------------------------------------------------
+# ForgeTypeId
+#
+# Armadilha real, paga na primeira rodada do construtor: o sufixo de versão
+# muda entre versões do Revit ('autodesk.spec.aec:length-2.0.0' no 2023,
+# '...-2.0.1' no 2025). Identidade de tipo de dado NUNCA compara a string
+# inteira — compara a espécie, sem o sufixo.
+# --------------------------------------------------------------------------
+
+_SUFIXO_VERSAO = re.compile(r"-\d+\.\d+\.\d+$")
+
+ESPECIE_COMPRIMENTO = u"autodesk.spec.aec:length"
+
+
+def especie_forge(forge_id):
+    u"""'autodesk.spec.aec:length-2.0.1' -> 'autodesk.spec.aec:length'."""
+    if not forge_id:
+        return None
+    return _SUFIXO_VERSAO.sub(u"", forge_id)
+
+
+def eh_comprimento(forge_id):
+    return especie_forge(forge_id) == ESPECIE_COMPRIMENTO
+
 
 def env(nome, padrao=None, obrigatorio=False):
     u"""Lê variável de ambiente, com erro explícito quando é obrigatória."""

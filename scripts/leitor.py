@@ -132,7 +132,9 @@ def _valor_do_tipo(tipo_familia, parametro_familia):
         if valor is None:
             return None
         # Comprimentos viram mm; os demais Double (ângulo, número) ficam crus.
-        if _forge_id(parametro_familia.Definition.GetDataType()) == u"autodesk.spec.aec:length-2.0.0":
+        # Comparação por espécie: o sufixo de versão do ForgeTypeId muda entre
+        # versões do Revit (2.0.0 no 2023, 2.0.1 no 2025).
+        if rfaspec.eh_comprimento(_forge_id(parametro_familia.Definition.GetDataType())):
             return para_mm(valor)
         return valor
     if armazenamento == StorageType.Integer:
