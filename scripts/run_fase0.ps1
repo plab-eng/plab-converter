@@ -94,6 +94,7 @@ $env:RFADG_FIXTURE   = Join-Path $Saida "fixture_origem.rfa"
 $env:RFADG_SPEC      = Join-Path $Saida "familyspec.json"
 $env:RFADG_SAIDA     = Join-Path $Saida "familia_convertida.rfa"
 $env:RFADG_RELATORIO = Join-Path $Saida "relatorio_fidelidade.json"
+$env:RFADG_RELATORIO_FLEX = Join-Path $Saida "relatorio_flex.json"
 $env:RFADG_ORIGEM_VERSAO  = $RevitOrigem
 $env:RFADG_DESTINO_VERSAO = $RevitDestino
 
