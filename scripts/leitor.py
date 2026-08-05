@@ -224,6 +224,7 @@ def ler_planos_de_referencia(doc):
 
         parametro_referencia = plano.get_Parameter(BuiltInParameter.ELEM_REFERENCE_NAME)
         planos.append({
+            u"_id": _id_valor(plano.Id),  # só para ordenar; removido no fim
             u"nome": nome,
             u"canonico": rfaspec.eh_plano_canonico(nome),
             u"inicio": _ponto(plano.BubbleEnd),
@@ -234,7 +235,14 @@ def ler_planos_de_referencia(doc):
             ),
         })
 
-    planos.sort(key=lambda item: item[u"nome"])
+    # Ordem de CRIAÇÃO (ElementId crescente), nunca alfabética. Numa cota
+    # rotulada entre dois planos, o Revit mantém parado o plano criado antes e
+    # move o outro. Ordenar por nome punha RFADG_Dir antes de RFADG_Esq no
+    # destino, invertendo a âncora: o sólido encolhia pela esquerda em vez de
+    # pela direita, e o vazio (parado) deixava de intersectá-lo.
+    planos.sort(key=lambda item: item[u"_id"])
+    for item in planos:
+        del item[u"_id"]
     return planos
 
 

@@ -324,6 +324,112 @@ def _cantos(caixa):
                 yield XYZ(x, y, z)
 
 
+def _esboco_da_extrusao(elemento):
+    u"""Offsets e extensão do perfil de uma extrusão, lidos do esboço.
+
+    Funciona mesmo quando a forma é membro de GeomCombination — situação em
+    que a geometria da forma vem vazia mas o esboço continua íntegro.
+    """
+    dados = {}
+
+    for rotulo, atributo in ((u"inicio_mm", u"StartOffset"), (u"fim_mm", u"EndOffset")):
+        try:
+            dados[rotulo] = interno_para_mm(getattr(elemento, atributo))
+        except Exception:
+            pass
+
+    try:
+        perfil = elemento.Sketch.Profile
+    except Exception as erro:
+        dados[u"esboco"] = para_unicode(str(erro))[:120]
+        return dados
+
+    minimos = None
+    maximos = None
+    for laco in perfil:
+        for curva in laco:
+            for indice in (0, 1):
+                ponto = curva.GetEndPoint(indice)
+                if minimos is None:
+                    minimos = [ponto.X, ponto.Y, ponto.Z]
+                    maximos = [ponto.X, ponto.Y, ponto.Z]
+                else:
+                    for eixo, valor in enumerate((ponto.X, ponto.Y, ponto.Z)):
+                        minimos[eixo] = min(minimos[eixo], valor)
+                        maximos[eixo] = max(maximos[eixo], valor)
+
+    if minimos is not None:
+        dados[u"perfil_min_mm"] = [interno_para_mm(v) for v in minimos]
+        dados[u"perfil_max_mm"] = [interno_para_mm(v) for v in maximos]
+
+    return dados
+
+
+def inspecionar_formas(doc):
+    u"""Bounding box de CADA forma isoladamente, sólidas e de vazio.
+
+    Instrumentação de diagnóstico, não medição de fidelidade: existe para
+    responder "o que esta forma virou quando este tipo está ativo". A medição
+    normal só enxerga a geometria líquida da combinação, então quando um vazio
+    corta menos do que deveria não há como saber se ele encolheu, se moveu ou
+    se deixou de intersectar. Aqui cada forma é medida sozinha.
+    """
+    formas = []
+
+    for elemento in FilteredElementCollector(doc).WhereElementIsNotElementType().ToElements():
+        if not isinstance(elemento, GenericForm):
+            continue
+
+        registro = {u"id": id_inteiro(elemento.Id)}
+        try:
+            registro[u"solido"] = bool(elemento.IsSolid)
+        except Exception as erro:
+            registro[u"erro"] = para_unicode(str(erro))[:120]
+            formas.append(registro)
+            continue
+
+        # Dados de ESBOÇO, não de geometria. Forma membra de combinação não
+        # devolve geometria nenhuma, mas o esboço continua legível — e é ele
+        # que revela se o perfil encolheu ou se moveu no flex.
+        registro.update(_esboco_da_extrusao(elemento))
+
+        try:
+            encontrados, _detalhe = _solidos_da_forma(elemento)
+        except Exception as erro:
+            registro[u"erro"] = para_unicode(str(erro))[:120]
+            formas.append(registro)
+            continue
+
+        if not encontrados:
+            registro[u"geometria"] = u"vazia"
+            formas.append(registro)
+            continue
+
+        minimos = None
+        maximos = None
+        volume = 0.0
+        for solido in encontrados:
+            volume += solido.Volume
+            caixa = solido.GetBoundingBox()
+            for canto in _cantos(caixa):
+                ponto = caixa.Transform.OfPoint(canto)
+                if minimos is None:
+                    minimos = [ponto.X, ponto.Y, ponto.Z]
+                    maximos = [ponto.X, ponto.Y, ponto.Z]
+                else:
+                    for eixo, valor in enumerate((ponto.X, ponto.Y, ponto.Z)):
+                        minimos[eixo] = min(minimos[eixo], valor)
+                        maximos[eixo] = max(maximos[eixo], valor)
+
+        registro[u"min_mm"] = [interno_para_mm(v) for v in minimos]
+        registro[u"max_mm"] = [interno_para_mm(v) for v in maximos]
+        registro[u"volume_mm3"] = interno_para_mm3(volume)
+        formas.append(registro)
+
+    formas.sort(key=lambda item: item[u"id"])
+    return formas
+
+
 def medir_por_tipo(doc):
     u"""Mede a geometria em cada tipo da família. Retorna nome -> medição.
 
@@ -365,7 +471,12 @@ def medir_por_tipo(doc):
         for nome, tipo in tipos:
             gerenciador.CurrentType = tipo
             doc.Regenerate()
-            medicoes[nome] = medir_geometria(doc)
+            medicao = medir_geometria(doc)
+            # Instrumentação: forma a forma, para saber o que o vazio vira
+            # quando este tipo está ativo.
+            if medicao is not None:
+                medicao[u"formas_isoladas"] = inspecionar_formas(doc)
+            medicoes[nome] = medicao
     finally:
         transacao.RollBack()
 

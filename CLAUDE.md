@@ -113,6 +113,23 @@ cota do outro lado é preciso reencontrar as mesmas referências. O contrato:
 Se um endereço não for reencontrável, entra em `lacunas` no FamilySpec e é
 reportado. Nunca falhar em silêncio.
 
+### A ordem de criação é semântica, não cosmética
+
+**O FamilySpec preserva a ordem de criação (ElementId crescente) de planos de
+referência e de formas. Nunca reordenar por nome "para dar determinismo".**
+
+Numa cota rotulada entre dois planos, quando o parâmetro muda o Revit mantém
+parado o plano **criado primeiro** e move o outro. Ordenar os planos
+alfabeticamente punha `RFADG_Dir` antes de `RFADG_Esq` no destino e invertia a
+âncora: o sólido encolhia pela esquerda em vez de pela direita. A família
+parecia perfeita — mesmos parâmetros, mesmas cotas, mesmos alinhamentos, mesmo
+bounding box — mas um vazio parado deixava de intersectá-la nos tipos menores,
+e só o **volume** denunciava (custou 4 hipóteses erradas antes de instrumentar).
+
+Lição geral: quando duas famílias têm estrutura idêntica e comportamento
+diferente, a diferença está em algo que o FamilySpec não captura. Instrumentar
+antes de formular a quinta hipótese.
+
 ## 6. Estado atual
 
 ### ✅ FASE 0 APROVADA — 2026-08-05
@@ -134,12 +151,25 @@ parâmetros builtin do template (strings/moeda/imagem — Manufacturer, Cost,
 Keynote etc.) e um plano não-canônico do template. Tudo assunto da Fase 1,
 sem impacto no flex.
 
+### ✅ FASE 1 — geometria e parâmetros fechados
+
+Fixture ampliada (vazio cortando, fórmula `Area_Base = Largura * Profundidade`,
+parâmetro de instância, texto, sim/não, inteiro) atravessa a conversão
+**2025 → 2023** com os 4 tipos em `REPRODUZ`, volume idêntico ao da origem:
+558M / 189M / 189M / 63M mm³.
+
+Placar da fase: divergências de parâmetro **37 → 1**, lacunas de fidelidade
+**11 → 2**.
+
+O validador virou genérico: o leitor grava a assinatura geométrica da origem
+(bbox + volume por tipo) e o validador compara o destino contra ela — não sabe
+nada sobre a família, então serve para qualquer uma.
+
 ### Próximo passo
 
-Fase 1: ampliar cobertura de tipos de dado (`_TIPOS_DE_DADO` no construtor),
-demais formas (blend, revolve, sweep, swept blend, voids), fórmulas com
-dependências, e a matriz de flex do validador (hoje mede bounding box da
-extrusão; precisa medir volume e cobrir min/max além dos tipos).
+Fase 1 (resto): demais formas — blend, revolve, sweep, swept blend. Depois
+testar com uma família real da biblioteca P-LAB, que é o teste que separa
+protótipo de produto.
 
 ## 7. Armadilhas já pagas — NÃO repetir
 

@@ -100,6 +100,7 @@ _TIPOS_DE_DADO = {
     u"autodesk.spec:spec.number": SpecTypeId.Number,
     u"autodesk.spec.measurable:currency": SpecTypeId.Currency,
     u"autodesk.spec.reference:material": SpecTypeId.Reference.Material,
+    u"autodesk.spec.reference:image": SpecTypeId.Reference.Image,
 }
 
 # Grupos de parâmetro, por espécie de ForgeTypeId. Cosmético (só afeta onde o
@@ -471,8 +472,24 @@ def _aplicar_alinhamentos_elegiveis(doc, vista, especificacao, planos, formas, a
 
         aplicados.add(indice)
 
+        # A ORDEM das referências decide quem é âncora e quem se move:
+        # NewAlignment(vista, ancora, movel). E `Dimension.References` do
+        # leitor NÃO devolve a ordem de criação — o Revit guarda numa ordem
+        # própria, que varia entre alinhamentos da mesma família.
+        #
+        # Reproduzir a ordem lida invertia a âncora em parte dos alinhamentos:
+        # o sólido passava a encolher pela esquerda em vez de pela direita, o
+        # vazio (parado) deixava de intersectar, e o corte sumia nos tipos
+        # menores. Por isso a ordem é NORMALIZADA aqui: o plano de referência é
+        # sempre a âncora, a face do sólido é sempre quem se alinha — que é a
+        # semântica correta de datum e a que a origem usa.
+        enderecos = sorted(
+            item[u"referencias"],
+            key=lambda endereco: 0 if endereco[u"tipo"] == u"plano" else 1,
+        )
+
         resolvidas = []
-        for endereco in item[u"referencias"]:
+        for endereco in enderecos:
             referencia = _resolver_referencia(endereco, planos, formas)
             if referencia is None:
                 resolvidas = None
