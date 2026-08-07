@@ -23,6 +23,7 @@ O modelo da linha de comando é só a portadora que dá boot no Revit.
 """
 
 import os
+import re
 import sys
 
 _RAIZ = os.environ.get("RFADG_ROOT")
@@ -36,13 +37,17 @@ from Autodesk.Revit.DB import (  # noqa: E402
     Transaction, XYZ, Line, Arc, Plane, SketchPlane,
     CurveArray, CurveArrArray, ReferenceArray, CombinableElementArray,
     FilteredElementCollector, View, ViewType, ReferencePlane,
-    Options, Solid, PlanarFace, Category,
+    Options, Solid, PlanarFace, Category, StorageType,
     BuiltInParameter, BuiltInCategory, SpecTypeId, GroupTypeId,
+    ExternalDefinitionCreationOptions,
 )
-from System import Enum  # noqa: E402
+from System import Enum, Guid  # noqa: E402
 
 mm = rfaspec.mm_para_interno
 log = rfaspec.log
+
+# Vírgula decimal entre dígitos — usado na repetição de SetFormula.
+_RE_VIRGULA_DECIMAL = re.compile(r"(\d),(\d)")
 
 
 def _obter_app():
@@ -88,35 +93,64 @@ def _pular(o_que, motivo):
 # Tipos de dado cobertos. Chaves por ESPÉCIE (sem o sufixo de versão, que muda
 # entre versões do Revit). Um tipo fora desta tabela NUNCA é aceito em silêncio:
 # vai para o relatório de fidelidade.
-_TIPOS_DE_DADO = {
-    u"autodesk.spec.aec:length": SpecTypeId.Length,
-    u"autodesk.spec.aec:area": SpecTypeId.Area,
-    u"autodesk.spec.aec:volume": SpecTypeId.Volume,
-    u"autodesk.spec.aec:angle": SpecTypeId.Angle,
-    # Atenção ao prefixo: o Revit usa `aec:number` e `aec:material` em famílias
-    # reais, NÃO `spec.number` nem `reference:material`. Confundir os dois fazia
-    # o construtor pular parâmetros que existiam. As duas grafias ficam.
-    u"autodesk.spec.aec:number": SpecTypeId.Number,
-    u"autodesk.spec:spec.number": SpecTypeId.Number,
-    u"autodesk.spec.aec:material": SpecTypeId.Reference.Material,
-    u"autodesk.spec.reference:material": SpecTypeId.Reference.Material,
-    u"autodesk.spec:spec.string": SpecTypeId.String.Text,
-    u"autodesk.spec.string:url": SpecTypeId.String.Url,
-    u"autodesk.spec:spec.bool": SpecTypeId.Boolean.YesNo,
-    # O Revit grava inteiro de família como int64, não como int.
-    u"autodesk.spec:spec.int64": SpecTypeId.Int.Integer,
-    u"autodesk.spec:spec.int": SpecTypeId.Int.Integer,
-    u"autodesk.spec.measurable:currency": SpecTypeId.Currency,
-    u"autodesk.spec.reference:image": SpecTypeId.Reference.Image,
-    # Espécies de MEP — o acervo P-LAB é de equipamento hidráulico, então
-    # estas não são exóticas: aparecem em 25 de 25 famílias inventariadas.
-    u"autodesk.spec.aec.piping:pipeSize": SpecTypeId.PipeSize,
-    u"autodesk.spec.aec.piping:flow": SpecTypeId.Flow,
-    u"autodesk.spec.aec.piping:temperature": SpecTypeId.PipingTemperature,
-    u"autodesk.spec.aec.electrical:frequency": SpecTypeId.ElectricalFrequency,
-    u"autodesk.spec.aec.electrical:potential": SpecTypeId.ElectricalPotential,
-    u"autodesk.spec.aec.electrical:power": SpecTypeId.ElectricalPower,
-}
+#
+# A tabela é montada DEFENSIVAMENTE, resolvendo cada SpecTypeId por caminho de
+# atributos: o conjunto de specs varia entre versões (`SpecTypeId.NumberOfPoles`
+# não existe no 2023) e um único acesso direto a atributo ausente derrubava o
+# script inteiro no import — mesma família de armadilha do REVOLVE_START_ANGLE
+# no leitor. O que não existir na versão corrente fica fora da cobertura e o
+# parâmetro correspondente vira lacuna honesta no relatório.
+
+def _resolver_spec(caminho):
+    u"""'Reference.Material' -> SpecTypeId.Reference.Material, ou None."""
+    alvo = SpecTypeId
+    for parte in caminho.split(u"."):
+        alvo = getattr(alvo, parte, None)
+        if alvo is None:
+            return None
+    return alvo
+
+
+def _montar_tipos_de_dado():
+    tabela = {}
+    # Atenção ao prefixo: o Revit usa `aec:number` e `aec:material` em
+    # famílias reais, NÃO `spec.number` nem `reference:material`. As duas
+    # grafias ficam. Espécies de MEP não são exóticas aqui: aparecem em 26 de
+    # 27 famílias reais inventariadas do acervo P-LAB.
+    candidatos = [
+        (u"autodesk.spec.aec:length", u"Length"),
+        (u"autodesk.spec.aec:area", u"Area"),
+        (u"autodesk.spec.aec:volume", u"Volume"),
+        (u"autodesk.spec.aec:angle", u"Angle"),
+        (u"autodesk.spec.aec:number", u"Number"),
+        (u"autodesk.spec:spec.number", u"Number"),
+        (u"autodesk.spec.aec:material", u"Reference.Material"),
+        (u"autodesk.spec.reference:material", u"Reference.Material"),
+        (u"autodesk.spec:spec.string", u"String.Text"),
+        (u"autodesk.spec.string:url", u"String.Url"),
+        (u"autodesk.spec:spec.bool", u"Boolean.YesNo"),
+        # O Revit grava inteiro de família como int64, não como int.
+        (u"autodesk.spec:spec.int64", u"Int.Integer"),
+        (u"autodesk.spec:spec.int", u"Int.Integer"),
+        (u"autodesk.spec.measurable:currency", u"Currency"),
+        (u"autodesk.spec.reference:image", u"Reference.Image"),
+        (u"autodesk.spec.aec.piping:pipeSize", u"PipeSize"),
+        (u"autodesk.spec.aec.piping:flow", u"Flow"),
+        (u"autodesk.spec.aec.piping:temperature", u"PipingTemperature"),
+        (u"autodesk.spec.aec.electrical:frequency", u"ElectricalFrequency"),
+        (u"autodesk.spec.aec.electrical:potential", u"ElectricalPotential"),
+        (u"autodesk.spec.aec.electrical:power", u"ElectricalPower"),
+        (u"autodesk.spec.aec:numberOfPoles", u"NumberOfPoles"),
+        (u"autodesk.spec.aec.structural:mass", u"Mass"),
+    ]
+    for especie, caminho in candidatos:
+        spec = _resolver_spec(caminho)
+        if spec is not None and especie not in tabela:
+            tabela[especie] = spec
+    return tabela
+
+
+_TIPOS_DE_DADO = _montar_tipos_de_dado()
 
 # Grupos de parâmetro, por espécie de ForgeTypeId. Cosmético (só afeta onde o
 # parâmetro aparece na paleta), então cair no padrão é aceitável e não vira
@@ -173,6 +207,76 @@ def ajustar_categoria(doc, especificacao):
         )
 
 
+def _grupo_compartilhado(app, estado):
+    u"""Abre (uma vez) o arquivo temporário de shared parameters e devolve o
+    grupo RFADG dentro dele.
+
+    A API só cria parâmetro compartilhado a partir de um arquivo de shared
+    parameters ativo, então um TEMPORÁRIO é forjado só para isto — e fica
+    ativo durante TODO o lote de AddParameter. Restaurar o arquivo do usuário
+    antes do AddParameter deixava a ExternalDefinition órfã e o Revit
+    respondia "Shared parameter creation failed." nos 6 parâmetros — a
+    restauração agora acontece uma única vez, no fim do lote
+    (_restaurar_arquivo_compartilhado).
+
+    Nome único por processo: um arquivo reaproveitado entre execuções poderia
+    conter um homônimo de OUTRA família com outro GUID, e o get_Item o
+    devolveria em silêncio — contaminação cruzada é inaceitável num conversor.
+    """
+    if u"grupo" in estado:
+        return estado[u"grupo"]
+
+    pasta = os.environ.get("TEMP") or os.environ.get("TMP") or u"."
+    caminho = os.path.join(pasta, u"rfadg_shared_{0}.txt".format(os.getpid()))
+
+    estado[u"anterior"] = app.SharedParametersFilename
+    if not os.path.isfile(caminho):
+        with open(caminho, "wb") as arquivo:
+            arquivo.write(b"")  # DefinitionFile exige arquivo existente
+
+    app.SharedParametersFilename = caminho
+    arquivo_definicoes = app.OpenSharedParameterFile()
+    if arquivo_definicoes is None:
+        raise ValueError(u"não foi possível abrir o arquivo temporário")
+
+    grupo = arquivo_definicoes.Groups.get_Item(u"RFADG")
+    if grupo is None:
+        grupo = arquivo_definicoes.Groups.Create(u"RFADG")
+    estado[u"grupo"] = grupo
+    return grupo
+
+
+def _restaurar_arquivo_compartilhado(app, estado):
+    u"""Devolve o SharedParametersFilename do usuário — deixá-lo apontando
+    para o nosso temporário seria grosseria."""
+    if u"anterior" not in estado:
+        return
+    try:
+        app.SharedParametersFilename = estado[u"anterior"] or u""
+    except Exception:
+        pass
+
+
+def _definicao_compartilhada(app, estado, item, tipo_de_dado):
+    u"""ExternalDefinition com o GUID da ORIGEM.
+
+    O GUID é o ponto inegociável: é ele que faz tabelas, etiquetas e filtros
+    de projeto continuarem enxergando o parâmetro depois da conversão.
+    Recriar com GUID novo produziria um homônimo que quebra todo agendamento.
+    """
+    guid = item.get(u"guid")
+    if not guid:
+        raise ValueError(u"spec sem GUID do parâmetro compartilhado")
+
+    grupo = _grupo_compartilhado(app, estado)
+    definicao = grupo.Definitions.get_Item(item[u"nome"])
+    if definicao is None:
+        opcoes = ExternalDefinitionCreationOptions(item[u"nome"], tipo_de_dado)
+        opcoes.GUID = Guid(guid)
+        definicao = grupo.Definitions.Create(opcoes)
+    return definicao
+
+
 def construir_parametros(doc, especificacao):
     u"""Cria os parâmetros de família do spec. Retorna nome -> FamilyParameter."""
     gerenciador = doc.FamilyManager
@@ -182,30 +286,40 @@ def construir_parametros(doc, especificacao):
         existentes[parametro.Definition.Name] = parametro
 
     mapa = dict(existentes)
+    estado_compartilhado = {}
 
-    for item in especificacao[u"parametros"]:
-        nome = item[u"nome"]
-        if nome in existentes:
-            continue  # builtin do template, nada a criar
+    try:
+        for item in especificacao[u"parametros"]:
+            nome = item[u"nome"]
+            if nome in existentes:
+                continue  # builtin do template, nada a criar
 
-        if item.get(u"compartilhado"):
-            _pular(u"parâmetro compartilhado '{0}'".format(nome),
-                   u"shared parameters ficam para a Fase 1")
-            continue
+            tipo_de_dado = _TIPOS_DE_DADO.get(
+                rfaspec.especie_forge(item.get(u"tipo_de_dado")))
+            if tipo_de_dado is None:
+                _pular(u"parâmetro '{0}'".format(nome),
+                       u"tipo de dado fora da cobertura: {0}".format(
+                           item.get(u"tipo_de_dado")))
+                continue
 
-        tipo_de_dado = _TIPOS_DE_DADO.get(rfaspec.especie_forge(item.get(u"tipo_de_dado")))
-        if tipo_de_dado is None:
-            _pular(u"parâmetro '{0}'".format(nome),
-                   u"tipo de dado fora da cobertura da Fase 0: {0}".format(
-                       item.get(u"tipo_de_dado")))
-            continue
+            grupo = _GRUPOS.get(rfaspec.especie_forge(item.get(u"grupo")), _GRUPO_PADRAO)
+            de_instancia = bool(item.get(u"de_instancia"))
 
-        grupo = _GRUPOS.get(rfaspec.especie_forge(item.get(u"grupo")), _GRUPO_PADRAO)
+            try:
+                if item.get(u"compartilhado"):
+                    definicao = _definicao_compartilhada(
+                        doc.Application, estado_compartilhado, item, tipo_de_dado)
+                    criado = gerenciador.AddParameter(definicao, grupo, de_instancia)
+                else:
+                    criado = gerenciador.AddParameter(
+                        nome, grupo, tipo_de_dado, de_instancia)
+            except Exception as erro:
+                _pular(u"parâmetro '{0}'".format(nome), unicode(erro)[:140])  # noqa: F821
+                continue
 
-        criado = gerenciador.AddParameter(
-            nome, grupo, tipo_de_dado, bool(item.get(u"de_instancia"))
-        )
-        mapa[nome] = criado
+            mapa[nome] = criado
+    finally:
+        _restaurar_arquivo_compartilhado(doc.Application, estado_compartilhado)
 
     return mapa
 
@@ -228,8 +342,24 @@ def aplicar_formulas(doc, especificacao, parametros):
             continue
         try:
             gerenciador.SetFormula(parametro, formula)
-        except Exception as erro:
-            _pular(u"fórmula de '{0}'".format(item[u"nome"]), unicode(erro))  # noqa: F821
+        except Exception as erro_original:
+            # Fórmula autorada em Revit pt-BR chega com vírgula decimal
+            # ('47,2 kg') e a sessão de destino a recusa. A repetição troca
+            # dígito,dígito por dígito.dígito — mas SÓ em fórmula sem chamada
+            # de função: em if(a>1,2,3) a vírgula é separador de argumento e a
+            # troca corromperia a fórmula (possivelmente para algo VÁLIDO e
+            # errado, o pior desfecho). Se falhar, lacuna com o erro ORIGINAL.
+            normalizada = formula
+            if u"(" not in formula:
+                normalizada = _RE_VIRGULA_DECIMAL.sub(r"\1.\2", formula)
+            if normalizada != formula:
+                try:
+                    gerenciador.SetFormula(parametro, normalizada)
+                    continue
+                except Exception:
+                    pass
+            _pular(u"fórmula de '{0}'".format(item[u"nome"]),
+                   unicode(erro_original)[:140])  # noqa: F821
 
     doc.Regenerate()
 
@@ -603,36 +733,66 @@ def _aplicar_alinhamentos_elegiveis(doc, vista, especificacao, planos, formas, a
 # 6. Associações e 7. Tipos
 # --------------------------------------------------------------------------
 
-_BUILTIN_ASSOCIAVEIS = {
-    u"EXTRUSION_END_PARAM": BuiltInParameter.EXTRUSION_END_PARAM,
-    u"EXTRUSION_START_PARAM": BuiltInParameter.EXTRUSION_START_PARAM,
-}
+def _parametro_do_elemento(elemento, nome_localizado, nome_builtin):
+    u"""Reencontra no elemento reconstruído o parâmetro a associar.
+
+    Dois caminhos, na ordem de confiabilidade:
+
+    1. BuiltInParameter resolvido POR NOME ("MATERIAL_ID_PARAM" etc.), que o
+       leitor gravou. É estável entre idiomas e versões. Era uma whitelist de
+       2 entradas — 17 dos 32 itens do primeiro relatório real eram
+       associações recusadas por ela.
+    2. LookupParameter pelo nome localizado, para o que não é builtin. Vale
+       porque origem e destino usam templates no mesmo idioma; se divergirem,
+       cai na lacuna e o relatório mostra.
+    """
+    if nome_builtin and nome_builtin != u"INVALID":
+        builtin = getattr(BuiltInParameter, nome_builtin, None)
+        if builtin is not None:
+            parametro = elemento.get_Parameter(builtin)
+            if parametro is not None:
+                return parametro
+
+    if nome_localizado:
+        try:
+            return elemento.LookupParameter(nome_localizado)
+        except Exception:
+            return None
+    return None
 
 
 def _associar_parametros_da_forma(doc, item, elemento, parametros):
     u"""Associações de parâmetro de UMA forma (o 2º mecanismo de flex).
 
-    Rodava em passada única depois de todas as formas existirem; agora roda
-    logo após a forma nascer e ser alinhada, espelhando a fixture — na origem
-    a altura do sólido foi associada ANTES de o vazio existir.
+    Roda logo após a forma nascer e ser alinhada, espelhando a fixture — na
+    origem a altura do sólido foi associada ANTES de o vazio existir.
     """
     gerenciador = doc.FamilyManager
     for nome_parametro, associacao in item.get(u"associacoes", {}).items():
-        builtin = _BUILTIN_ASSOCIAVEIS.get(associacao.get(u"builtin"))
         alvo = parametros.get(associacao[u"parametro_de_familia"])
-        if builtin is None or alvo is None:
+        if alvo is None:
             _pular(u"associação '{0}' da forma #{1}".format(
                     nome_parametro, item[u"indice"]),
-                   u"builtin fora da cobertura ou parâmetro ausente")
+                   u"parâmetro de família '{0}' não existe no destino".format(
+                       associacao[u"parametro_de_familia"]))
             continue
-        parametro_elemento = elemento.get_Parameter(builtin)
+
+        parametro_elemento = _parametro_do_elemento(
+            elemento, nome_parametro, associacao.get(u"builtin"))
         if parametro_elemento is None:
-            _pular(u"associação '{0}'".format(nome_parametro),
+            _pular(u"associação '{0}' da forma #{1}".format(
+                    nome_parametro, item[u"indice"]),
                    u"parâmetro do elemento não encontrado no destino")
             continue
-        gerenciador.AssociateElementParameterToFamilyParameter(
-            parametro_elemento, alvo
-        )
+
+        try:
+            gerenciador.AssociateElementParameterToFamilyParameter(
+                parametro_elemento, alvo
+            )
+        except Exception as erro:
+            _pular(u"associação '{0}' da forma #{1}".format(
+                    nome_parametro, item[u"indice"]),
+                   unicode(erro)[:140])  # noqa: F821
 
 
 def _nomes_de_comprimento(especificacao):
@@ -645,25 +805,54 @@ def _nomes_de_comprimento(especificacao):
 
 
 def _aplicar_valores_do_tipo(gerenciador, tipo, parametros, de_comprimento):
-    u"""Aplica os valores de um tipo ao tipo CORRENTE (mm -> interno)."""
+    u"""Aplica os valores de um tipo ao tipo CORRENTE (mm -> interno).
+
+    O despacho é pelo StorageType REAL do parâmetro no destino, não pelo tipo
+    Python do valor. Despachar pelo valor mandava um int para parâmetro de
+    Material (StorageType.ElementId) e estourava "The storage type of family
+    parameter is not a double type or integer type" — 4 itens do primeiro
+    relatório real.
+
+    ElementId é pulado de propósito, com registro: o valor da origem é um id
+    de Material/Imagem daquele documento, e ids não atravessam documentos.
+    Reproduzir materiais de verdade é transportá-los por NOME — trabalho
+    próprio, futuro, não um Set.
+    """
     for nome, valor in tipo[u"valores"].items():
         if valor is None:
             continue
         parametro = parametros.get(nome)
         if parametro is None or parametro.IsDeterminedByFormula:
             continue
+
+        armazenamento = parametro.StorageType
         try:
-            if nome in de_comprimento:
-                gerenciador.Set(parametro, mm(valor))
-            elif isinstance(valor, float):
-                gerenciador.Set(parametro, valor)
-            elif isinstance(valor, (int, long)):  # noqa: F821
-                gerenciador.Set(parametro, valor)
-            elif isinstance(valor, unicode):  # noqa: F821
-                gerenciador.Set(parametro, valor)
+            if armazenamento == StorageType.Double:
+                if nome in de_comprimento:
+                    gerenciador.Set(parametro, mm(valor))
+                elif isinstance(valor, (int, long, float)):  # noqa: F821
+                    gerenciador.Set(parametro, float(valor))
+                else:
+                    _pular(u"valor '{0}' do tipo '{1}'".format(nome, tipo[u"nome"]),
+                           u"esperava número, spec trouxe {0}".format(
+                               type(valor).__name__))
+            elif armazenamento == StorageType.Integer:
+                if isinstance(valor, (int, long, float)):  # noqa: F821
+                    gerenciador.Set(parametro, int(valor))
+                else:
+                    _pular(u"valor '{0}' do tipo '{1}'".format(nome, tipo[u"nome"]),
+                           u"esperava inteiro, spec trouxe {0}".format(
+                               type(valor).__name__))
+            elif armazenamento == StorageType.String:
+                gerenciador.Set(parametro, unicode(valor))  # noqa: F821
+            else:
+                # StorageType.ElementId (Material, Imagem...)
+                _pular(u"valor '{0}' do tipo '{1}'".format(nome, tipo[u"nome"]),
+                       u"referência a elemento (id não atravessa documentos); "
+                       u"transporte por nome fica para a fase de materiais")
         except Exception as erro:
             _pular(u"valor '{0}' do tipo '{1}'".format(nome, tipo[u"nome"]),
-                   unicode(erro))  # noqa: F821
+                   unicode(erro)[:140])  # noqa: F821
 
 
 def estabelecer_tipo_corrente(doc, especificacao, parametros):

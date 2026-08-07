@@ -19,6 +19,7 @@ box fica idêntico e só o volume acusa.
 """
 
 import os
+import re
 import sys
 
 _RAIZ = os.environ.get("RFADG_ROOT")
@@ -27,6 +28,8 @@ if not _RAIZ:
 sys.path.insert(0, os.path.join(_RAIZ, "pylib"))
 
 import rfaspec  # noqa: E402
+
+from Autodesk.Revit.DB import StorageType  # noqa: E402
 
 log = rfaspec.log
 
@@ -116,8 +119,6 @@ def validar_geometria(doc, especificacao):
 
 def _valor_do_tipo(tipo_familia, parametro):
     u"""Mesma leitura do leitor, para a comparação ser maçã com maçã."""
-    from Autodesk.Revit.DB import StorageType
-
     if not tipo_familia.HasValue(parametro):
         return None
 
@@ -143,6 +144,20 @@ def _forge_id(forge_type_id):
         return forge_type_id.TypeId or None
     except AttributeError:
         return None
+
+
+_RE_VIRGULA_DECIMAL = re.compile(r"(\d),(\d)")
+
+
+def _formula_canonica(formula):
+    u"""Fórmula com vírgula decimal normalizada, para comparação justa."""
+    if not formula:
+        return None
+    if u"(" in formula:
+        # Com chamada de função a vírgula pode ser separador de argumento —
+        # mesma regra do construtor.
+        return formula
+    return _RE_VIRGULA_DECIMAL.sub(r"\1.\2", formula)
 
 
 def _iguais(esperado, obtido):
@@ -191,7 +206,10 @@ def validar_parametros(doc, especificacao):
 
         esperada = item.get(u"formula")
         obtida = parametro.Formula
-        if (esperada or None) != (obtida or None):
+        # Compara com vírgula decimal normalizada dos DOIS lados: o construtor
+        # regrava '47,2 kg' (autorada em pt-BR) como '47.2 kg', e sem a mesma
+        # normalização aqui a conversão correta apareceria como divergência.
+        if _formula_canonica(esperada) != _formula_canonica(obtida):
             divergencias.append({
                 u"parametro": nome, u"problema": u"FORMULA",
                 u"detalhe": u"origem={0!r} destino={1!r}".format(esperada, obtida),
@@ -214,6 +232,12 @@ def validar_parametros(doc, especificacao):
                 continue
             parametro = no_destino.get(nome)
             if parametro is None:
+                continue
+            # Parâmetro de referência (Material, Imagem): o valor é um
+            # ElementId, e id não atravessa documentos — comparar 13010 com
+            # None não mede fidelidade nenhuma. O construtor já reporta esses
+            # como lacuna; aqui a comparação é pulada.
+            if parametro.StorageType == StorageType.ElementId:
                 continue
             obtido = _valor_do_tipo(tipo, parametro)
             if not _iguais(esperado, obtido):

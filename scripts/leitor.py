@@ -161,6 +161,18 @@ def ler_parametros(doc):
     parametros = []
     for parametro in gerenciador.Parameters:
         definicao = parametro.Definition
+
+        # GUID só existe (e só importa) em parâmetro compartilhado: é a
+        # identidade que faz tabelas e etiquetas continuarem enxergando o
+        # parâmetro depois da conversão. Recriar compartilhado com outro GUID
+        # produziria um homônimo que quebra todo agendamento existente.
+        guid = None
+        if parametro.IsShared:
+            try:
+                guid = str(parametro.GUID)
+            except Exception:
+                pass
+
         parametros.append({
             u"nome": definicao.Name,
             u"tipo_de_dado": _forge_id(definicao.GetDataType()),
@@ -168,6 +180,7 @@ def ler_parametros(doc):
             u"armazenamento": str(parametro.StorageType),
             u"de_instancia": bool(parametro.IsInstance),
             u"compartilhado": bool(parametro.IsShared),
+            u"guid": guid,
             u"formula": parametro.Formula,
             u"dirigido_por_formula": bool(parametro.IsDeterminedByFormula),
             u"reporta": bool(parametro.IsReporting),

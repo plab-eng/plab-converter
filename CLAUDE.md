@@ -237,18 +237,39 @@ fixture escrita por quem já sabe o que espera):
 4. `The storage type of family parameter is not a double type` — atribuir
    valor a parâmetro sem checar o StorageType real.
 
+### Parâmetros da família real fechados — 2026-08-07
+
+Três rodadas sobre a New SD 25-40: divergências **12 → 6 → 1**, itens não
+reproduzidos **32 → 15 → 8**. O que fechou:
+
+- **Associações por nome**: builtin resolvido dinamicamente
+  (`_parametro_do_elemento`), fallback `LookupParameter`. Eram 17 itens.
+- **Compartilhados com GUID da origem**: arquivo temporário de shared
+  parameters (único por processo), ativo durante TODO o lote — restaurá-lo
+  antes do `AddParameter` deixava a ExternalDefinition órfã e o Revit
+  respondia "Shared parameter creation failed." O GUID preservado é o que
+  mantém tabelas e etiquetas funcionando. 7 de 8 entraram.
+- **Despacho por StorageType real** no `Set`; ElementId (Material/Imagem)
+  vira lacuna explícita — id não atravessa documentos.
+- **Fórmula com locale**: família autorada em pt-BR traz `'47,2 kg'` e o
+  destino recusa. Retry com vírgula→ponto, SÓ em fórmula sem `(` — em
+  `if(a>1,2,3)` a troca corromperia para algo possivelmente válido e errado.
+- Validador não compara mais valores de ElementId (13010 vs None não mede
+  fidelidade) e normaliza fórmulas dos dois lados.
+
+Sobras da família, todas justificadas: `numberOfPoles` (spec não existe na
+API do 2023), materiais por id (fase de materiais), tipo `" "` (API recusa),
+plano de template, e a revolução ilegível — que responde pelos 0,72% de
+diferença de volume (provavelmente um vazio de furação).
+
 ### Próximo passo
 
-Ordem ditada pelo relatório de fidelidade da família real:
-
-1. **Associações de parâmetro** — 17 dos 32 itens. `_BUILTIN_ASSOCIAVEIS` só
-   cobre 2 builtins; famílias reais associam Material, visibilidade e outros.
-2. **Parâmetros compartilhados** — 8 itens. Exige lidar com shared parameter
-   file (ou recriar via `ExternalDefinition`).
-3. **StorageType antes de `Set`** — 4 itens, correção mecânica.
-4. **Sweep** (81 ocorrências) e **SweptBlend** (21).
-5. **Famílias aninhadas** — 20 de 27 famílias; 5 são só aninhadas.
-6. **Conectores MEP** — 26 de 27.
+1. **Sweep** (81 ocorrências) e **SweptBlend** (21).
+2. **Famílias aninhadas** — 20 de 27 famílias; 5 são só aninhadas.
+3. **Conectores MEP** — 26 de 27.
+4. **Materiais por nome** — transporte de Material entre documentos.
+5. Leitura de esboço via geometria para formas com "Sketch loops cannot be
+   obtained" (fecharia os 0,72% da New SD).
 
 ## 7. Armadilhas já pagas — NÃO repetir
 
@@ -310,6 +331,16 @@ Ordem ditada pelo relatório de fidelidade da família real:
     nunca a string inteira. A comparação inteira fez o construtor pular os
     parâmetros dimensionais e o leitor gravar comprimentos em pés — pego pelo
     relatório de fidelidade na primeira rodada.
+12b. **NUNCA acessar membro de enum/classe da API por atributo direto** em
+    código que roda em várias versões — o conjunto de membros varia, e um
+    único acesso a membro ausente derruba o script inteiro (no import, se for
+    nível de módulo; antes do try, se for argumento — o Python avalia
+    argumentos antes de chamar a função). Já mordeu DUAS vezes:
+    `BuiltInParameter.REVOLVE_START_ANGLE` (não existe em lugar nenhum) e
+    `SpecTypeId.NumberOfPoles` (não existe no 2023). Resolver sempre por nome
+    com `getattr(..., None)` — ver `_builtin()` no leitor e
+    `_montar_tipos_de_dado()` no construtor. O que não resolver na versão
+    corrente vira lacuna honesta, não crash.
 13. **`get_Geometry` é cacheado por elemento: a PRIMEIRA chamada manda.**
     Chamadas seguintes com `Options` diferentes devolvem o cache da primeira
     até a próxima regeneração. E `Options.View` em sessão headless
