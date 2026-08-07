@@ -20,6 +20,7 @@ Saída: o .rfa em RFADG_FIXTURE.
     pyrevit run scripts/criar_fixture.py <portadora.rfa> --revit=2025
 """
 
+import math
 import os
 import sys
 
@@ -170,6 +171,41 @@ def _alinhar_face_ao_plano(doc, vista, plano, extrusao, normal):
             u"Nenhuma face planar com normal {0} na extrusão.".format(normal)
         )
     doc.FamilyCreate.NewAlignment(vista, plano.GetReference(), faces[0].Reference)
+
+
+ANEL_RAIO_INTERNO = 300.0
+ANEL_RAIO_EXTERNO = 400.0
+ANEL_BASE = 0.0
+ANEL_TOPO = 100.0
+
+
+def _criar_anel(doc):
+    u"""Revolução de 360°: retângulo no plano XZ girado em torno do eixo Z.
+
+    Fica FORA da combinação de corte — é uma forma sólida solta, para o
+    medidor exercitar também o caminho "GenericForm sem combinação".
+    """
+    plano_xz = Plane.CreateByNormalAndOrigin(XYZ.BasisY, XYZ.Zero)
+    plano_esboco = SketchPlane.Create(doc, plano_xz)
+
+    cantos = [
+        XYZ(mm(ANEL_RAIO_INTERNO), 0.0, mm(ANEL_BASE)),
+        XYZ(mm(ANEL_RAIO_EXTERNO), 0.0, mm(ANEL_BASE)),
+        XYZ(mm(ANEL_RAIO_EXTERNO), 0.0, mm(ANEL_TOPO)),
+        XYZ(mm(ANEL_RAIO_INTERNO), 0.0, mm(ANEL_TOPO)),
+    ]
+    curvas = CurveArray()
+    for indice in range(len(cantos)):
+        curvas.Append(Line.CreateBound(cantos[indice], cantos[(indice + 1) % len(cantos)]))
+    perfil = CurveArrArray()
+    perfil.Append(curvas)
+
+    eixo = Line.CreateBound(XYZ.Zero, XYZ(0.0, 0.0, mm(1000.0)))
+
+    doc.FamilyCreate.NewRevolution(
+        True, perfil, plano_esboco, eixo, 0.0, 2.0 * math.pi
+    )
+    doc.Regenerate()
 
 
 def _cortar(doc, solido, vazio):
@@ -326,7 +362,12 @@ def construir(doc):
     # com o sólido, equivalente ao "Cut Geometry" do Family Editor.
     _cortar(doc, extrusao, vazio)
 
-    # 8. Tipos.
+    # 8. Revolução — anel, para exercitar o caminho de NewRevolution.
+    #    Perfil no plano XZ girado em torno do eixo Z. O eixo PRECISA estar no
+    #    mesmo plano do perfil, senão o Revit recusa.
+    _criar_anel(doc)
+
+    # 9. Tipos.
     for nome, largura, profundidade, altura in TIPOS:
         gerenciador.NewType(nome)
         gerenciador.Set(par_largura, mm(largura))

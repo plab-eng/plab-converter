@@ -27,9 +27,9 @@ sys.path.insert(0, os.path.join(_RAIZ, "pylib"))
 import rfaspec  # noqa: E402
 
 from Autodesk.Revit.DB import (  # noqa: E402
-    FilteredElementCollector, ReferencePlane, Dimension, Extrusion, GenericForm,
-    GeomCombination, Line, Arc, PlanarFace, BuiltInCategory, BuiltInParameter,
-    StorageType,
+    FilteredElementCollector, ReferencePlane, Dimension, Extrusion, Revolution,
+    GenericForm, GeomCombination, Line, Arc, PlanarFace, BuiltInCategory,
+    BuiltInParameter, StorageType,
 )
 
 para_mm = rfaspec.interno_para_mm
@@ -313,11 +313,10 @@ def ler_formas(doc):
     a ordem de criação, então o vazio sai depois do sólido que ele corta — que
     é a ordem em que o construtor precisa recriá-los.
 
-    Coleta TODA `GenericForm`, não só `Extrusion`. As que ainda não têm suporte
-    (Blend, Revolution, Sweep, SweptBlend) entram como lacuna em vez de sumir:
-    coletar só extrusão fazia uma família cheia de sweeps virar um FamilySpec
-    quase vazio, sem nada no relatório — exatamente o silêncio que o projeto
-    promete nunca produzir.
+    Coleta TODA `GenericForm`, não só as suportadas. As sem suporte entram como
+    lacuna em vez de sumir: coletar só extrusão fazia uma família cheia de
+    sweeps virar um FamilySpec quase vazio, sem nada no relatório — exatamente
+    o silêncio que o projeto promete nunca produzir.
     """
     gerenciador = doc.FamilyManager
     coletor = FilteredElementCollector(doc).OfClass(GenericForm)
@@ -327,37 +326,137 @@ def ler_formas(doc):
     indice_por_id = {}
     lacunas = []
 
-    for extrusao in todas:
-        if not isinstance(extrusao, Extrusion):
+    for elemento in todas:
+        indice = len(formas)
+
+        if isinstance(elemento, Extrusion):
+            registro = _ler_extrusao(elemento)
+        elif isinstance(elemento, Revolution):
+            registro = _ler_revolucao(elemento)
+        else:
+            registro = None
+
+        if registro is None:
             lacunas.append({
-                u"elemento_id": _id_valor(extrusao.Id),
-                u"motivo": u"forma sem suporte: {0}".format(type(extrusao).__name__),
+                u"elemento_id": _id_valor(elemento.Id),
+                u"motivo": u"forma sem suporte: {0}".format(type(elemento).__name__),
             })
             continue
 
-        indice = len(formas)
-        esboco = extrusao.Sketch
-        plano = esboco.SketchPlane.GetPlane()
-
-        subcategoria = extrusao.Subcategory
-        formas.append({
+        subcategoria = elemento.Subcategory
+        registro.update({
             u"indice": indice,
-            u"tipo": u"extrusao",
-            u"solido": bool(extrusao.IsSolid),
-            u"visivel": bool(extrusao.Visible),
-            u"deslocamento_inicial": para_mm(extrusao.StartOffset),
-            u"deslocamento_final": para_mm(extrusao.EndOffset),
-            u"plano_de_esboco": {
-                u"origem": _ponto(plano.Origin),
-                u"normal": _vetor(plano.Normal),
-            },
-            u"perfil": _perfil_para_lista(esboco.Profile),
+            u"solido": bool(elemento.IsSolid),
+            u"visivel": bool(elemento.Visible),
             u"subcategoria": subcategoria.Name if subcategoria else None,
-            u"associacoes": _associacoes_de_parametro(gerenciador, extrusao),
+            u"associacoes": _associacoes_de_parametro(gerenciador, elemento),
         })
-        indice_por_id[_id_valor(extrusao.Id)] = indice
+        formas.append(registro)
+        indice_por_id[_id_valor(elemento.Id)] = indice
 
     return formas, indice_por_id, lacunas
+
+
+def _plano_de_esboco(esboco):
+    plano = esboco.SketchPlane.GetPlane()
+    return {
+        u"origem": _ponto(plano.Origin),
+        u"normal": _vetor(plano.Normal),
+    }
+
+
+def _ler_extrusao(extrusao):
+    esboco = extrusao.Sketch
+    return {
+        u"tipo": u"extrusao",
+        u"deslocamento_inicial": para_mm(extrusao.StartOffset),
+        u"deslocamento_final": para_mm(extrusao.EndOffset),
+        u"plano_de_esboco": _plano_de_esboco(esboco),
+        u"perfil": _perfil_para_lista(esboco.Profile),
+    }
+
+
+def _builtin(*nomes):
+    u"""Resolve o primeiro BuiltInParameter que existir, pelo NOME.
+
+    Enums de BuiltInParameter variam entre versões do Revit e nem todo nome
+    plausível existe: `REVOLVE_START_ANGLE` não existe e derrubava o leitor
+    inteiro com AttributeError — o Python avalia o argumento antes de chamar a
+    função, então nem o fallback interno chegava a rodar. Resolver por nome,
+    tarde, transforma isso num None inofensivo.
+    """
+    for nome in nomes:
+        valor = getattr(BuiltInParameter, nome, None)
+        if valor is not None:
+            return valor
+    return None
+
+
+def _angulo_da_revolucao(revolucao, propriedade, *nomes_builtin):
+    u"""Ângulo em radianos, pela propriedade ou pelo parâmetro builtin."""
+    try:
+        valor = getattr(revolucao, propriedade, None)
+        if valor is not None:
+            return float(valor)
+    except Exception:
+        pass
+
+    builtin = _builtin(*nomes_builtin)
+    if builtin is None:
+        return None
+    try:
+        parametro = revolucao.get_Parameter(builtin)
+    except Exception:
+        return None
+    return float(parametro.AsDouble()) if parametro is not None else None
+
+
+def _eixo_da_revolucao(revolucao):
+    u"""Eixo como par de pontos. Aceita Line ou elemento com GeometryCurve."""
+    try:
+        eixo = revolucao.Axis
+    except Exception:
+        return None
+    if eixo is None:
+        return None
+
+    curva = eixo
+    if not hasattr(curva, "GetEndPoint"):
+        # Em algumas versões o eixo vem como ModelLine (elemento), não Line.
+        curva = getattr(eixo, "GeometryCurve", None)
+    if curva is None or not hasattr(curva, "GetEndPoint"):
+        return None
+
+    return {
+        u"inicio": _ponto(curva.GetEndPoint(0)),
+        u"fim": _ponto(curva.GetEndPoint(1)),
+    }
+
+
+def _ler_revolucao(revolucao):
+    u"""Revolução: perfil girado em torno de um eixo no mesmo plano.
+
+    Retorna None (vira lacuna) se o eixo não for legível — sem eixo não há
+    como reconstruir, e inventar um produziria geometria errada em silêncio.
+    """
+    eixo = _eixo_da_revolucao(revolucao)
+    if eixo is None:
+        return None
+
+    esboco = revolucao.Sketch
+    return {
+        u"tipo": u"revolucao",
+        u"plano_de_esboco": _plano_de_esboco(esboco),
+        u"perfil": _perfil_para_lista(esboco.Profile),
+        u"eixo": eixo,
+        # Radianos, adimensional — não passa por conversão de unidade.
+        u"angulo_inicial": _angulo_da_revolucao(
+            revolucao, "StartAngle",
+            "REVOLUTION_START_ANGLE", "REVOLVE_START_ANGLE"),
+        u"angulo_final": _angulo_da_revolucao(
+            revolucao, "EndAngle",
+            "REVOLUTION_END_ANGLE", "REVOLVE_END_ANGLE"),
+    }
 
 
 # --------------------------------------------------------------------------

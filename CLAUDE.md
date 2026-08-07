@@ -165,22 +165,41 @@ O validador virou genérico: o leitor grava a assinatura geométrica da origem
 (bbox + volume por tipo) e o validador compara o destino contra ela — não sabe
 nada sobre a família, então serve para qualquer uma.
 
-### ⚠️ Realidade do acervo — inventário de 25 famílias reais (2026-08-06)
+### ⚠️ Realidade do acervo — inventário de famílias reais (2026-08-06)
 
-`scripts/inventario.py` levantou 25 famílias da biblioteca P-LAB (equipamento
-de piscina: trocadores de calor, ralos, bombas). O resultado reordena a Fase 1:
+`scripts/inventario.py` levanta o que famílias reais usam, em uma só
+inicialização do Revit. Rodado sobre o acervo de trabalho em
+`G:\Meu Drive\Servidor - Kamae\...\Famílias` — 152 famílias em 6 bibliotecas
+(Piscina, Gás, Fortlev, Bakof, Solaris, Sodramar): caixas d'água, cisternas,
+biodigestores, coletores solares, reservatórios térmicos, registros de gás,
+trocadores de calor, duchas, escadas.
+
+Amostra estratificada de 27 famílias, 7 por biblioteca:
 
 | Construto | Ocorrências | Situação |
 |---|---|---|
-| `Extrusion` | 652 | coberto |
-| **`Sweep`** | **284** | não coberto |
-| **`Revolution`** | **63** | não coberto |
-| **`Blend`** | **25** | não coberto |
-| `SweptBlend` | 2 | não coberto |
+| `Extrusion` | 194 | ✅ coberto |
+| **`Sweep`** | **81** | não coberto |
+| `Revolution` | 54 | ✅ coberto (2026-08-06) |
+| **`SweptBlend`** | **21** | não coberto |
+| `Blend` | 5 | não coberto |
 
-- **0 de 25** famílias usam apenas extrusão
-- **23 de 25** têm famílias aninhadas
-- **25 de 25** têm conectores MEP
+- **4 de 27** famílias usam apenas extrusão
+- **20 de 27** têm famílias aninhadas
+- **26 de 27** têm conectores MEP
+- **5 famílias têm ZERO geometria própria** — toda a geometria vive em
+  aninhadas (Tanque Fortlev 310L, coletores Solaris, duchas Sodramar). Para
+  essas, aninhadas não é refinamento: é o conteúdo inteiro.
+
+Caminho curto identificado: os trocadores de calor Sodramar têm 26–30
+extrusões e **0 aninhadas** — só falta `Revolution` para ficarem convertíveis
+ponta a ponta. É o primeiro alvo real.
+
+> Nota de método: um inventário anterior amostrou 25 famílias de uma única
+> pasta de projeto (`4 - PISCINA`) e me levou a descrever o acervo como sendo
+> de piscina. Era uma pasta de projeto, não a especialidade. Amostrar de uma
+> pasta só e generalizar foi erro de método — daí a estratificação por
+> biblioteca.
 
 **A cobertura real do conversor sobre este acervo é zero hoje.** A Fase 1
 "aprovada" vale para o conjunto de construtos da fixture, que nenhuma família
@@ -227,6 +246,13 @@ Ordem ditada pelo inventário, não por preferência:
    pelo processo do Revit.
 4. **`--purge` apaga o log.** Ao depurar, rodar sem `--purge` — o traceback do
    IronPython só aparece no log da execução.
+4b. **`pyrevit run` devolve exit 0 MESMO quando o script quebra.** Checar
+   `$LASTEXITCODE` não detecta falha nenhuma. Pior: o arquivo de saída da
+   etapa anterior continua no disco, então a etapa seguinte consome dado
+   VELHO e o relatório final sai verde com números de outra execução — já
+   quase virou um "FASE APROVADA" falso. **Sempre apagar os arquivos de saída
+   antes de cada etapa e conferir que foram recriados.** O único sinal
+   confiável de erro é o traceback no bloco `==> Execution Log`.
 5. **Módulo irmão não é importável.** O CLI copia só o script alvo para a pasta
    temporária. O bootstrap de `sys.path` tem que estar **inline** em cada
    script, lendo `RFADG_ROOT`.

@@ -246,6 +246,41 @@ def _curva_do_spec(item):
     raise ValueError(u"Curva fora da cobertura: {0}".format(item[u"tipo"]))
 
 
+def _criar_revolucao(doc, item, perfil, plano_esboco):
+    u"""Revolução a partir do spec.
+
+    `NewRevolution(isSolid, profile, sketchPlane, axis, startAngle, endAngle)`
+    — ângulos em RADIANOS (adimensionais, não passam por conversão de unidade)
+    e o eixo precisa estar no mesmo plano dos laços do perfil.
+    """
+    eixo = item.get(u"eixo")
+    if not eixo:
+        _pular(u"forma #{0} (revolucao)".format(item[u"indice"]),
+               u"spec sem eixo — o leitor não conseguiu lê-lo")
+        return None
+
+    angulo_inicial = item.get(u"angulo_inicial")
+    angulo_final = item.get(u"angulo_final")
+    if angulo_inicial is None or angulo_final is None:
+        _pular(u"forma #{0} (revolucao)".format(item[u"indice"]),
+               u"spec sem ângulo inicial ou final")
+        return None
+
+    try:
+        return doc.FamilyCreate.NewRevolution(
+            bool(item[u"solido"]),
+            perfil,
+            plano_esboco,
+            Line.CreateBound(_xyz(eixo[u"inicio"]), _xyz(eixo[u"fim"])),
+            float(angulo_inicial),
+            float(angulo_final),
+        )
+    except Exception as erro:
+        _pular(u"forma #{0} (revolucao)".format(item[u"indice"]),
+               unicode(erro)[:160])  # noqa: F821
+        return None
+
+
 def _perfil_do_spec(lacos):
     perfil = CurveArrArray()
     for laco in lacos:
@@ -283,32 +318,37 @@ def construir_formas(doc, vista, especificacao, planos, parametros):
     _aplicar_alinhamentos_elegiveis(doc, vista, especificacao, planos, mapa, aplicados)
 
     for item in especificacao[u"formas"]:
-        if item[u"tipo"] != u"extrusao":
-            _pular(u"forma #{0} ({1})".format(item[u"indice"], item[u"tipo"]),
-                   u"Fase 0 cobre apenas extrusões")
-            continue
-
         plano_geometrico = Plane.CreateByNormalAndOrigin(
             _vetor(item[u"plano_de_esboco"][u"normal"]),
             _xyz(item[u"plano_de_esboco"][u"origem"]),
         )
         plano_esboco = SketchPlane.Create(doc, plano_geometrico)
+        perfil = _perfil_do_spec(item[u"perfil"])
 
-        # O último argumento de NewExtrusion é o OFFSET FINAL, não a altura.
-        # Passar a diferença (final - inicial) fazia o vazio terminar em 1500
-        # onde a origem terminava em 1400.
-        extrusao = doc.FamilyCreate.NewExtrusion(
-            bool(item[u"solido"]),
-            _perfil_do_spec(item[u"perfil"]),
-            plano_esboco,
-            mm(item[u"deslocamento_final"]),
-        )
-        if item[u"deslocamento_inicial"]:
-            parametro = extrusao.get_Parameter(BuiltInParameter.EXTRUSION_START_PARAM)
-            if parametro:
-                parametro.Set(mm(item[u"deslocamento_inicial"]))
+        if item[u"tipo"] == u"extrusao":
+            # O último argumento de NewExtrusion é o OFFSET FINAL, não a
+            # altura. Passar a diferença (final - inicial) fazia o vazio
+            # terminar em 1500 onde a origem terminava em 1400.
+            forma = doc.FamilyCreate.NewExtrusion(
+                bool(item[u"solido"]), perfil, plano_esboco,
+                mm(item[u"deslocamento_final"]),
+            )
+            if item[u"deslocamento_inicial"]:
+                parametro = forma.get_Parameter(BuiltInParameter.EXTRUSION_START_PARAM)
+                if parametro:
+                    parametro.Set(mm(item[u"deslocamento_inicial"]))
 
-        mapa[item[u"indice"]] = extrusao
+        elif item[u"tipo"] == u"revolucao":
+            forma = _criar_revolucao(doc, item, perfil, plano_esboco)
+            if forma is None:
+                continue
+
+        else:
+            _pular(u"forma #{0} ({1})".format(item[u"indice"], item[u"tipo"]),
+                   u"tipo de forma ainda sem suporte no construtor")
+            continue
+
+        mapa[item[u"indice"]] = forma
         doc.Regenerate()
 
         # Trava e associa ESTA forma antes de a próxima nascer, como na
@@ -316,7 +356,7 @@ def construir_formas(doc, vista, especificacao, planos, parametros):
         # antes de alinhar), e a associação vem depois do alinhamento —
         # exatamente a sequência comprovadamente boa.
         _aplicar_alinhamentos_elegiveis(doc, vista, especificacao, planos, mapa, aplicados)
-        _associar_parametros_da_forma(doc, item, extrusao, parametros)
+        _associar_parametros_da_forma(doc, item, forma, parametros)
         doc.Regenerate()
 
     # Nunca silencioso: alinhamento que ficou sem vez é porque referencia
