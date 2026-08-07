@@ -262,14 +262,28 @@ API do 2023), materiais por id (fase de materiais), tipo `" "` (API recusa),
 plano de template, e a revolução ilegível — que responde pelos 0,72% de
 diferença de volume (provavelmente um vazio de furação).
 
-### Próximo passo
+### Sweep e Blend fechados — 2026-08-07
 
-1. **Sweep** (81 ocorrências) e **SweptBlend** (21).
-2. **Famílias aninhadas** — 20 de 27 famílias; 5 são só aninhadas.
-3. **Conectores MEP** — 26 de 27.
-4. **Materiais por nome** — transporte de Material entre documentos.
-5. Leitura de esboço via geometria para formas com "Sketch loops cannot be
-   obtained" (fecharia os 0,72% da New SD).
+Fixture com as 5 formas (extrusão, vazio, revolução, sweep, blend) **APROVADA
+a 0,00% nos 4 tipos**. Cisterna Fortlev: 41/42 formas, 30/31 sweeps
+reproduzidos. Ver `RELATORIO.md` para o quadro completo.
+
+Armadilhas novas: perfil de Sweep vai em 2D LOCAL para NewCurveLoopsProfile
+(mundo produziria geometria em lugar nenhum); Blend é normalizado pelo Revit
+para plano+offsets (TopOffset/BottomOffset — FirstEnd/SecondEnd NÃO existem
+como propriedade; builtins reais BLEND_END_PARAM/BLEND_START_PARAM, achados
+por sonda exaustiva depois de 5 candidatos errados); NewBlend com os dois
+perfis no mesmo plano = "Unexpected internal error: code 1".
+
+### Próximo passo (ver RELATORIO.md §6)
+
+1. **Esboço ilegível** ("Sketch loops cannot be obtained") — defeito nº 1
+   medido: causa os 0,72% da New SD E os +94% da Cisterna (o vazio interno é
+   a única forma ilegível dela).
+2. **Famílias aninhadas** — 20/27; 5 famílias são SÓ aninhadas.
+3. **Conectores MEP** — 26/27.
+4. **Materiais por nome.**
+5. SweptBlend em famílias reais (21 ocorrências).
 
 ## 7. Armadilhas já pagas — NÃO repetir
 

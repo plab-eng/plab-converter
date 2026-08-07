@@ -37,9 +37,9 @@ from Autodesk.Revit.DB import (  # noqa: E402
     Transaction, XYZ, Line, Arc, Plane, SketchPlane,
     CurveArray, CurveArrArray, ReferenceArray, CombinableElementArray,
     FilteredElementCollector, View, ViewType, ReferencePlane,
-    Options, Solid, PlanarFace, Category, StorageType,
+    Options, Solid, PlanarFace, Category, StorageType, Transform,
     BuiltInParameter, BuiltInCategory, SpecTypeId, GroupTypeId,
-    ExternalDefinitionCreationOptions,
+    ExternalDefinitionCreationOptions, ProfilePlaneLocation,
 )
 from System import Enum, Guid  # noqa: E402
 
@@ -413,6 +413,114 @@ def _curva_do_spec(item):
     raise ValueError(u"Curva fora da cobertura: {0}".format(item[u"tipo"]))
 
 
+def _curva_2d(item):
+    u"""Curva de perfil local (2D, mm) -> curva no plano XY interno."""
+    def _xy(par):
+        return XYZ(mm(par[0]), mm(par[1]), 0.0)
+    if item[u"tipo"] == u"linha":
+        return Line.CreateBound(_xy(item[u"inicio"]), _xy(item[u"fim"]))
+    if item[u"tipo"] == u"arco":
+        return Arc.Create(_xy(item[u"inicio"]), _xy(item[u"fim"]), _xy(item[u"meio"]))
+    raise ValueError(u"curva 2D fora da cobertura: {0}".format(item[u"tipo"]))
+
+
+def _perfil_2d(lacos):
+    u"""Perfil local do spec -> CurveArrArray no plano XY (o que
+    NewCurveLoopsProfile exige — ele mesmo transporta para o plano certo)."""
+    perfil = CurveArrArray()
+    for laco in lacos:
+        curvas = CurveArray()
+        for item in laco:
+            curvas.Append(_curva_2d(item))
+        perfil.Append(curvas)
+    return perfil
+
+
+def _criar_varredura(doc, item, plano_esboco):
+    u"""Sweep: NewSweep(isSolid, caminho, planoDoCaminho, SweepProfile, 0, Start).
+
+    O caminho vem em coordenadas de mundo; o perfil, em 2D local — o
+    NewCurveLoopsProfile exige o perfil no plano XY e o transporta sozinho.
+    Índice/posição do perfil não são legíveis na origem; 0/Start é o padrão do
+    Family Editor e qualquer desvio aparece no volume do validador.
+    """
+    caminho = CurveArray()
+    for curva in item[u"caminho"][0]:
+        caminho.Append(_curva_do_spec(curva))
+
+    perfil = doc.Application.Create.NewCurveLoopsProfile(
+        _perfil_2d(item[u"perfil_local"]))
+
+    return doc.FamilyCreate.NewSweep(
+        bool(item[u"solido"]), caminho, plano_esboco,
+        perfil, 0, ProfilePlaneLocation.Start,
+    )
+
+
+def _criar_mescla(doc, item, plano_esboco):
+    u"""Blend: perfis do spec vêm no plano da base; a altura vem dos offsets.
+
+    O Revit normaliza SEMPRE os dois esboços para o plano da base, com as
+    alturas em FirstEnd/SecondEnd — o leitor grava assim. Mas o NewBlend
+    exige o perfil de topo já na cota real (dois perfis no mesmo plano =
+    altura zero = "Unexpected internal error: code 1"). Então cada perfil é
+    TRANSLADADO ao longo da normal do plano pelo seu offset antes da criação;
+    o Revit renormaliza ao ingerir e FirstEnd/SecondEnd saem certos.
+    """
+    normal = _vetor(item[u"plano_de_esboco"][u"normal"])
+    deslocamento_topo = item.get(u"deslocamento_topo")
+    deslocamento_base = item.get(u"deslocamento_base") or 0.0
+
+    if deslocamento_topo is None:
+        _pular(u"forma #{0} (mescla)".format(item[u"indice"]),
+               u"spec sem SecondEnd — altura do blend indeterminável")
+        return None
+    if abs(deslocamento_topo - deslocamento_base) < 1e-9:
+        _pular(u"forma #{0} (mescla)".format(item[u"indice"]),
+               u"blend de altura zero (SecondEnd == FirstEnd)")
+        return None
+
+    base = _laco_transladado(
+        item[u"perfil_base"], normal, deslocamento_base,
+        u"mescla/base", item[u"indice"])
+    topo = _laco_transladado(
+        item[u"perfil_topo"], normal, deslocamento_topo,
+        u"mescla/topo", item[u"indice"])
+    if base is None or topo is None:
+        return None
+
+    return doc.FamilyCreate.NewBlend(
+        bool(item[u"solido"]), topo, base, plano_esboco)
+
+
+def _laco_transladado(perfil_spec, normal, deslocamento_mm, rotulo, indice):
+    u"""CurveArray do laço único, transladado pela normal * offset."""
+    if len(perfil_spec) != 1:
+        _pular(u"forma #{0} ({1})".format(indice, rotulo),
+               u"perfil com {0} laços; Blend exige 1".format(len(perfil_spec)))
+        return None
+    vetor = normal.Multiply(mm(deslocamento_mm)) if deslocamento_mm else None
+    transformacao = Transform.CreateTranslation(vetor) if vetor is not None else None
+    curvas = CurveArray()
+    for item in perfil_spec[0]:
+        curva = _curva_do_spec(item)
+        if transformacao is not None:
+            curva = curva.CreateTransformed(transformacao)
+        curvas.Append(curva)
+    return curvas
+
+
+def _criar_varredura_mesclada(doc, item, plano_esboco):
+    u"""SweptBlend: NewSweptBlend(isSolid, curva, plano, perfilBase, perfilTopo)."""
+    caminho = _curva_do_spec(item[u"caminho"][0][0])
+    base = doc.Application.Create.NewCurveLoopsProfile(
+        _perfil_2d(item[u"perfil_base"]))
+    topo = doc.Application.Create.NewCurveLoopsProfile(
+        _perfil_2d(item[u"perfil_topo"]))
+    return doc.FamilyCreate.NewSweptBlend(
+        bool(item[u"solido"]), caminho, plano_esboco, base, topo)
+
+
 def _criar_revolucao(doc, item, perfil, plano_esboco):
     u"""Revolução a partir do spec.
 
@@ -490,29 +598,49 @@ def construir_formas(doc, vista, especificacao, planos, parametros):
             _xyz(item[u"plano_de_esboco"][u"origem"]),
         )
         plano_esboco = SketchPlane.Create(doc, plano_geometrico)
-        perfil = _perfil_do_spec(item[u"perfil"])
 
-        if item[u"tipo"] == u"extrusao":
-            # O último argumento de NewExtrusion é o OFFSET FINAL, não a
-            # altura. Passar a diferença (final - inicial) fazia o vazio
-            # terminar em 1500 onde a origem terminava em 1400.
-            forma = doc.FamilyCreate.NewExtrusion(
-                bool(item[u"solido"]), perfil, plano_esboco,
-                mm(item[u"deslocamento_final"]),
-            )
-            if item[u"deslocamento_inicial"]:
-                parametro = forma.get_Parameter(BuiltInParameter.EXTRUSION_START_PARAM)
-                if parametro:
-                    parametro.Set(mm(item[u"deslocamento_inicial"]))
+        # Uma forma que falhe na reconstrução NÃO derruba a família: vira
+        # lacuna com o erro real — mesma regra do leitor.
+        try:
+            if item[u"tipo"] == u"extrusao":
+                # O último argumento de NewExtrusion é o OFFSET FINAL, não a
+                # altura. Passar a diferença (final - inicial) fazia o vazio
+                # terminar em 1500 onde a origem terminava em 1400.
+                forma = doc.FamilyCreate.NewExtrusion(
+                    bool(item[u"solido"]),
+                    _perfil_do_spec(item[u"perfil"]),
+                    plano_esboco,
+                    mm(item[u"deslocamento_final"]),
+                )
+                if item[u"deslocamento_inicial"]:
+                    parametro = forma.get_Parameter(
+                        BuiltInParameter.EXTRUSION_START_PARAM)
+                    if parametro:
+                        parametro.Set(mm(item[u"deslocamento_inicial"]))
 
-        elif item[u"tipo"] == u"revolucao":
-            forma = _criar_revolucao(doc, item, perfil, plano_esboco)
-            if forma is None:
+            elif item[u"tipo"] == u"revolucao":
+                forma = _criar_revolucao(
+                    doc, item, _perfil_do_spec(item[u"perfil"]), plano_esboco)
+
+            elif item[u"tipo"] == u"varredura":
+                forma = _criar_varredura(doc, item, plano_esboco)
+
+            elif item[u"tipo"] == u"mescla":
+                forma = _criar_mescla(doc, item, plano_esboco)
+
+            elif item[u"tipo"] == u"varredura_mesclada":
+                forma = _criar_varredura_mesclada(doc, item, plano_esboco)
+
+            else:
+                _pular(u"forma #{0} ({1})".format(item[u"indice"], item[u"tipo"]),
+                       u"tipo de forma ainda sem suporte no construtor")
                 continue
-
-        else:
+        except Exception as erro:
             _pular(u"forma #{0} ({1})".format(item[u"indice"], item[u"tipo"]),
-                   u"tipo de forma ainda sem suporte no construtor")
+                   unicode(erro)[:160])  # noqa: F821
+            continue
+
+        if forma is None:
             continue
 
         mapa[item[u"indice"]] = forma

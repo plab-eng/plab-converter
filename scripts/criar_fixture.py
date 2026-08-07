@@ -32,10 +32,10 @@ sys.path.insert(0, os.path.join(_RAIZ, "pylib"))
 import rfaspec  # noqa: E402
 
 from Autodesk.Revit.DB import (  # noqa: E402
-    Transaction, XYZ, Line, Plane, SketchPlane,
+    Transaction, XYZ, Line, Arc, Plane, SketchPlane,
     CurveArray, CurveArrArray, ReferenceArray, CombinableElementArray,
     FilteredElementCollector, View, ViewType,
-    Options, Solid, PlanarFace,
+    Options, Solid, PlanarFace, ProfilePlaneLocation,
     BuiltInParameter, SpecTypeId, GroupTypeId,
 )
 
@@ -208,6 +208,84 @@ def _criar_anel(doc):
     doc.Regenerate()
 
 
+VARREDURA_RAIO = 900.0        # raio do arco do caminho
+VARREDURA_LADO = 60.0         # lado do perfil quadrado
+
+
+def _criar_varredura(doc):
+    u"""Sweep: perfil quadrado ao longo de um quarto de arco no plano do piso.
+
+    O perfil vai para NewCurveLoopsProfile em coordenadas XY LOCAIS — o Revit
+    o transporta para o plano do caminho. Perfil em coordenadas de mundo aqui
+    produziria geometria em lugar nenhum.
+    """
+    plano_piso = Plane.CreateByNormalAndOrigin(XYZ.BasisZ, XYZ(0, 0, mm(1600.0)))
+    plano_esboco = SketchPlane.Create(doc, plano_piso)
+
+    caminho = CurveArray()
+    caminho.Append(Arc.Create(
+        XYZ(mm(VARREDURA_RAIO), 0, mm(1600.0)),
+        XYZ(0, mm(VARREDURA_RAIO), mm(1600.0)),
+        XYZ(mm(VARREDURA_RAIO * 0.7071), mm(VARREDURA_RAIO * 0.7071), mm(1600.0)),
+    ))
+
+    metade = mm(VARREDURA_LADO / 2.0)
+    cantos = [
+        XYZ(-metade, -metade, 0), XYZ(metade, -metade, 0),
+        XYZ(metade, metade, 0), XYZ(-metade, metade, 0),
+    ]
+    curvas = CurveArray()
+    for indice in range(4):
+        curvas.Append(Line.CreateBound(cantos[indice], cantos[(indice + 1) % 4]))
+    lacos = CurveArrArray()
+    lacos.Append(curvas)
+    perfil = doc.Application.Create.NewCurveLoopsProfile(lacos)
+
+    doc.FamilyCreate.NewSweep(
+        True, caminho, plano_esboco, perfil, 0, ProfilePlaneLocation.Start)
+    doc.Regenerate()
+
+
+MESCLA_BASE = 160.0
+MESCLA_TOPO = 80.0
+MESCLA_ALTURA = 120.0
+
+
+def _criar_mescla(doc):
+    u"""Blend: quadrado grande na base -> quadrado pequeno no topo.
+
+    O perfil de topo vai em coordenadas de MUNDO, já na altura real — é assim
+    que o NewBlend funciona (exemplo canônico do Building Coder, 0470). Os
+    dois perfis no mesmo plano produzem blend de altura zero e o Revit
+    responde "Unexpected internal error: code 1", sem explicar.
+    """
+    centro_x, centro_y = mm(-900.0), mm(-900.0)
+    plano = Plane.CreateByNormalAndOrigin(XYZ.BasisZ, XYZ(centro_x, centro_y, 0))
+    plano_esboco = SketchPlane.Create(doc, plano)
+
+    def _quadrado(lado, altura_z):
+        metade = mm(lado / 2.0)
+        cota = mm(altura_z)
+        cantos = [
+            XYZ(centro_x - metade, centro_y - metade, cota),
+            XYZ(centro_x + metade, centro_y - metade, cota),
+            XYZ(centro_x + metade, centro_y + metade, cota),
+            XYZ(centro_x - metade, centro_y + metade, cota),
+        ]
+        curvas = CurveArray()
+        for indice in range(4):
+            curvas.Append(Line.CreateBound(cantos[indice], cantos[(indice + 1) % 4]))
+        return curvas
+
+    doc.FamilyCreate.NewBlend(
+        True,
+        _quadrado(MESCLA_TOPO, MESCLA_ALTURA),
+        _quadrado(MESCLA_BASE, 0.0),
+        plano_esboco,
+    )
+    doc.Regenerate()
+
+
 def _cortar(doc, solido, vazio):
     u"""Aplica o vazio sobre o sólido (equivalente ao Cut Geometry da UI).
 
@@ -367,7 +445,11 @@ def construir(doc):
     #    mesmo plano do perfil, senão o Revit recusa.
     _criar_anel(doc)
 
-    # 9. Tipos.
+    # 9. Sweep e Blend, soltos, para exercitar os caminhos novos.
+    _criar_varredura(doc)
+    _criar_mescla(doc)
+
+    # 10. Tipos.
     for nome, largura, profundidade, altura in TIPOS:
         gerenciador.NewType(nome)
         gerenciador.Set(par_largura, mm(largura))

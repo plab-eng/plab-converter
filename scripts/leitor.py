@@ -28,8 +28,8 @@ import rfaspec  # noqa: E402
 
 from Autodesk.Revit.DB import (  # noqa: E402
     FilteredElementCollector, ReferencePlane, Dimension, Extrusion, Revolution,
-    GenericForm, GeomCombination, Line, Arc, PlanarFace, BuiltInCategory,
-    BuiltInParameter, StorageType,
+    Sweep, Blend, SweptBlend, GenericForm, GeomCombination, Line, Arc,
+    PlanarFace, BuiltInCategory, BuiltInParameter, StorageType,
 )
 
 para_mm = rfaspec.interno_para_mm
@@ -360,6 +360,17 @@ def ler_formas(doc):
             elif isinstance(elemento, Revolution):
                 registro = _ler_revolucao(elemento)
                 motivo = u"Revolution sem eixo legível"
+            elif isinstance(elemento, Sweep):
+                registro = _ler_varredura(elemento)
+                motivo = u"Sweep sem caminho ou perfil legível"
+            elif isinstance(elemento, SweptBlend):
+                # Antes do Blend: SweptBlend NÃO herda de Blend, mas a ordem
+                # explícita documenta a intenção.
+                registro = _ler_varredura_mesclada(elemento)
+                motivo = u"SweptBlend sem caminho ou perfis legíveis"
+            elif isinstance(elemento, Blend):
+                registro = _ler_mescla(elemento)
+                motivo = u"Blend sem esboços legíveis"
         except Exception as erro:
             registro = None
             motivo = u"{0} ilegível: {1}".format(
@@ -420,6 +431,159 @@ def _builtin(*nomes):
         if valor is not None:
             return valor
     return None
+
+
+def _perfil_local(esboco):
+    u"""Perfil em coordenadas 2D LOCAIS do plano do esboço, em mm.
+
+    Sweep e SweptBlend exigem o perfil "no plano XY" (NewCurveLoopsProfile o
+    transporta para o plano do caminho), então gravar coordenadas de mundo —
+    como a extrusão faz — produziria perfil no lugar errado. A projeção usa
+    XVec/YVec do plano: u = (p-origem)·XVec, v = (p-origem)·YVec.
+    """
+    plano = esboco.SketchPlane.GetPlane()
+    origem, eixo_u, eixo_v = plano.Origin, plano.XVec, plano.YVec
+
+    def _2d(ponto):
+        delta = ponto - origem
+        return [para_mm(delta.DotProduct(eixo_u)), para_mm(delta.DotProduct(eixo_v))]
+
+    lacos = []
+    for laco in esboco.Profile:
+        curvas = []
+        for curva in laco:
+            if isinstance(curva, Line):
+                curvas.append({
+                    u"tipo": u"linha",
+                    u"inicio": _2d(curva.GetEndPoint(0)),
+                    u"fim": _2d(curva.GetEndPoint(1)),
+                })
+            elif isinstance(curva, Arc):
+                curvas.append({
+                    u"tipo": u"arco",
+                    u"inicio": _2d(curva.GetEndPoint(0)),
+                    u"fim": _2d(curva.GetEndPoint(1)),
+                    u"meio": _2d(curva.Evaluate(0.5, True)),
+                })
+            else:
+                raise ValueError(
+                    u"curva de perfil sem suporte: {0}".format(type(curva).__name__))
+        curvas and lacos.append(curvas)
+    return lacos
+
+
+def _ler_varredura(varredura):
+    u"""Sweep: perfil transportado ao longo de um caminho.
+
+    O caminho fica em coordenadas de mundo (reconstruído sobre o plano do
+    esboço do caminho); o perfil fica em 2D local (ver _perfil_local).
+    Índice e posição do perfil não são legíveis pela API — a reconstrução usa
+    0/Start, e qualquer desvio disso aparece no volume do validador.
+    """
+    esboco_caminho = varredura.PathSketch
+    esboco_perfil = varredura.ProfileSketch
+    if esboco_caminho is None or esboco_perfil is None:
+        return None
+
+    return {
+        u"tipo": u"varredura",
+        u"plano_de_esboco": _plano_de_esboco(esboco_caminho),
+        u"caminho": _perfil_para_lista(esboco_caminho.Profile),
+        u"perfil_local": _perfil_local(esboco_perfil),
+    }
+
+
+def _ler_mescla(mescla):
+    u"""Blend: perfil base transita para o perfil de topo.
+
+    Os dois perfis ficam em coordenadas de MUNDO — o NewBlend os aceita assim,
+    com o topo já na altura real (Building Coder 0470). Os offsets são lidos à
+    parte porque blend autorado na UI pode guardar a altura em parâmetro
+    ("Second End") com os dois esboços no mesmo plano — nesse caso o construtor
+    reaplica o offset.
+    """
+    esboco_base = mescla.BottomSketch
+    esboco_topo = mescla.TopSketch
+    if esboco_base is None or esboco_topo is None:
+        return None
+
+    # O Revit normaliza SEMPRE os dois esboços para o plano da base e guarda
+    # as alturas nas propriedades FirstEnd/SecondEnd — até blend criado via
+    # API com o topo em z real é relido assim (verificado na fixture: topo
+    # criado em z=120 voltou com curvas em z=0). A altura mora nos offsets.
+    return {
+        u"tipo": u"mescla",
+        u"plano_de_esboco": _plano_de_esboco(esboco_base),
+        u"perfil_base": _perfil_para_lista(esboco_base.Profile),
+        u"perfil_topo": _perfil_para_lista(esboco_topo.Profile),
+        # Nomes REAIS, achados por sonda exaustiva (sonda_blend.py) depois de
+        # cinco candidatos errados: propriedades TopOffset/BottomOffset,
+        # builtins BLEND_END_PARAM/BLEND_START_PARAM ("Second End"/"First End"
+        # na UI). FirstEnd/SecondEnd como propriedade NÃO existem.
+        u"deslocamento_topo": _primeiro_nao_nulo(
+            _duplo_propriedade(mescla, "TopOffset"),
+            _duplo_builtin(mescla, "BLEND_END_PARAM")),
+        u"deslocamento_base": _primeiro_nao_nulo(
+            _duplo_propriedade(mescla, "BottomOffset"),
+            _duplo_builtin(mescla, "BLEND_START_PARAM")),
+    }
+
+
+def _primeiro_nao_nulo(*valores):
+    u"""Primeiro valor que não é None — 0.0 é valor legítimo, `or` o perderia."""
+    for valor in valores:
+        if valor is not None:
+            return valor
+    return None
+
+
+def _ler_varredura_mesclada(elemento):
+    u"""SweptBlend: dois perfis transportados ao longo de UM segmento.
+
+    Leitura inteiramente defensiva (getattr): a superfície da API varia e o
+    que faltar vira lacuna, nunca crash.
+    """
+    esboco_caminho = getattr(elemento, "PathSketch", None)
+    esboco_base = getattr(elemento, "BottomSketch", None)
+    esboco_topo = getattr(elemento, "TopSketch", None)
+    if esboco_caminho is None or esboco_base is None or esboco_topo is None:
+        return None
+
+    caminho = _perfil_para_lista(esboco_caminho.Profile)
+    # NewSweptBlend aceita UMA curva de caminho; mais que isso é lacuna.
+    if len(caminho) != 1 or len(caminho[0]) != 1:
+        return None
+
+    return {
+        u"tipo": u"varredura_mesclada",
+        u"plano_de_esboco": _plano_de_esboco(esboco_caminho),
+        u"caminho": caminho,
+        u"perfil_base": _perfil_local(esboco_base),
+        u"perfil_topo": _perfil_local(esboco_topo),
+    }
+
+
+def _duplo_propriedade(elemento, nome):
+    u"""Propriedade Double de um elemento, em mm; None se ausente/ilegível."""
+    try:
+        valor = getattr(elemento, nome, None)
+        return para_mm(float(valor)) if valor is not None else None
+    except Exception:
+        return None
+
+
+def _duplo_builtin(elemento, *nomes):
+    u"""Valor Double de um parâmetro builtin resolvido por nome, em mm."""
+    builtin = _builtin(*nomes)
+    if builtin is None:
+        return None
+    try:
+        parametro = elemento.get_Parameter(builtin)
+    except Exception:
+        return None
+    if parametro is None:
+        return None
+    return para_mm(parametro.AsDouble())
 
 
 def _angulo_da_revolucao(revolucao, propriedade, *nomes_builtin):
