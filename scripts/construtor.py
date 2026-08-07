@@ -92,15 +92,29 @@ _TIPOS_DE_DADO = {
     u"autodesk.spec.aec:area": SpecTypeId.Area,
     u"autodesk.spec.aec:volume": SpecTypeId.Volume,
     u"autodesk.spec.aec:angle": SpecTypeId.Angle,
+    # Atenção ao prefixo: o Revit usa `aec:number` e `aec:material` em famílias
+    # reais, NÃO `spec.number` nem `reference:material`. Confundir os dois fazia
+    # o construtor pular parâmetros que existiam. As duas grafias ficam.
+    u"autodesk.spec.aec:number": SpecTypeId.Number,
+    u"autodesk.spec:spec.number": SpecTypeId.Number,
+    u"autodesk.spec.aec:material": SpecTypeId.Reference.Material,
+    u"autodesk.spec.reference:material": SpecTypeId.Reference.Material,
     u"autodesk.spec:spec.string": SpecTypeId.String.Text,
+    u"autodesk.spec.string:url": SpecTypeId.String.Url,
     u"autodesk.spec:spec.bool": SpecTypeId.Boolean.YesNo,
     # O Revit grava inteiro de família como int64, não como int.
     u"autodesk.spec:spec.int64": SpecTypeId.Int.Integer,
     u"autodesk.spec:spec.int": SpecTypeId.Int.Integer,
-    u"autodesk.spec:spec.number": SpecTypeId.Number,
     u"autodesk.spec.measurable:currency": SpecTypeId.Currency,
-    u"autodesk.spec.reference:material": SpecTypeId.Reference.Material,
     u"autodesk.spec.reference:image": SpecTypeId.Reference.Image,
+    # Espécies de MEP — o acervo P-LAB é de equipamento hidráulico, então
+    # estas não são exóticas: aparecem em 25 de 25 famílias inventariadas.
+    u"autodesk.spec.aec.piping:pipeSize": SpecTypeId.PipeSize,
+    u"autodesk.spec.aec.piping:flow": SpecTypeId.Flow,
+    u"autodesk.spec.aec.piping:temperature": SpecTypeId.PipingTemperature,
+    u"autodesk.spec.aec.electrical:frequency": SpecTypeId.ElectricalFrequency,
+    u"autodesk.spec.aec.electrical:potential": SpecTypeId.ElectricalPotential,
+    u"autodesk.spec.aec.electrical:power": SpecTypeId.ElectricalPower,
 }
 
 # Grupos de parâmetro, por espécie de ForgeTypeId. Cosmético (só afeta onde o

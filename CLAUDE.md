@@ -165,11 +165,42 @@ O validador virou genérico: o leitor grava a assinatura geométrica da origem
 (bbox + volume por tipo) e o validador compara o destino contra ela — não sabe
 nada sobre a família, então serve para qualquer uma.
 
+### ⚠️ Realidade do acervo — inventário de 25 famílias reais (2026-08-06)
+
+`scripts/inventario.py` levantou 25 famílias da biblioteca P-LAB (equipamento
+de piscina: trocadores de calor, ralos, bombas). O resultado reordena a Fase 1:
+
+| Construto | Ocorrências | Situação |
+|---|---|---|
+| `Extrusion` | 652 | coberto |
+| **`Sweep`** | **284** | não coberto |
+| **`Revolution`** | **63** | não coberto |
+| **`Blend`** | **25** | não coberto |
+| `SweptBlend` | 2 | não coberto |
+
+- **0 de 25** famílias usam apenas extrusão
+- **23 de 25** têm famílias aninhadas
+- **25 de 25** têm conectores MEP
+
+**A cobertura real do conversor sobre este acervo é zero hoje.** A Fase 1
+"aprovada" vale para o conjunto de construtos da fixture, que nenhuma família
+real da biblioteca reproduz. Isso não invalida a tese — a mecânica de
+regeneração está provada — mas dimensiona honestamente o que falta.
+
+Espécies de parâmetro que o acervo usa e o construtor não mapeava: `aec:number`
+e `aec:material` (não `spec.number` / `reference:material` — prefixo diferente
+do que se imagina), `string:url`, `piping:pipeSize`, `piping:flow`,
+`piping:temperature`, `electrical:frequency|potential|power`. Já adicionadas.
+
 ### Próximo passo
 
-Fase 1 (resto): demais formas — blend, revolve, sweep, swept blend. Depois
-testar com uma família real da biblioteca P-LAB, que é o teste que separa
-protótipo de produto.
+Ordem ditada pelo inventário, não por preferência:
+
+1. **Sweep** — 284 ocorrências, de longe o maior retorno
+2. **Revolution** (63) e **Blend** (25)
+3. **Famílias aninhadas** — 23 de 25 famílias dependem
+4. **Conectores MEP** — 25 de 25; para o acervo P-LAB não é opcional
+5. Rodar o ciclo completo numa família real e medir a fidelidade de verdade
 
 ## 7. Armadilhas já pagas — NÃO repetir
 

@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.join(_RAIZ, "pylib"))
 import rfaspec  # noqa: E402
 
 from Autodesk.Revit.DB import (  # noqa: E402
-    FilteredElementCollector, ReferencePlane, Dimension, Extrusion,
+    FilteredElementCollector, ReferencePlane, Dimension, Extrusion, GenericForm,
     GeomCombination, Line, Arc, PlanarFace, BuiltInCategory, BuiltInParameter,
     StorageType,
 )
@@ -306,21 +306,36 @@ def _associacoes_de_parametro(gerenciador, elemento):
 
 
 def ler_formas(doc):
-    u"""Extrusões do documento (sólidas e de vazio), em ordem determinística.
+    u"""Formas do documento (sólidas e de vazio), em ordem determinística.
 
     A ordem importa: o índice na lista é a identidade da forma para o
     endereçamento de faces nas cotas e alinhamentos. Ordenar por ElementId dá
     a ordem de criação, então o vazio sai depois do sólido que ele corta — que
     é a ordem em que o construtor precisa recriá-los.
+
+    Coleta TODA `GenericForm`, não só `Extrusion`. As que ainda não têm suporte
+    (Blend, Revolution, Sweep, SweptBlend) entram como lacuna em vez de sumir:
+    coletar só extrusão fazia uma família cheia de sweeps virar um FamilySpec
+    quase vazio, sem nada no relatório — exatamente o silêncio que o projeto
+    promete nunca produzir.
     """
     gerenciador = doc.FamilyManager
-    coletor = FilteredElementCollector(doc).OfClass(Extrusion)
-    extrusoes = sorted(coletor.ToElements(), key=lambda e: _id_valor(e.Id))
+    coletor = FilteredElementCollector(doc).OfClass(GenericForm)
+    todas = sorted(coletor.ToElements(), key=lambda e: _id_valor(e.Id))
 
     formas = []
     indice_por_id = {}
+    lacunas = []
 
-    for indice, extrusao in enumerate(extrusoes):
+    for extrusao in todas:
+        if not isinstance(extrusao, Extrusion):
+            lacunas.append({
+                u"elemento_id": _id_valor(extrusao.Id),
+                u"motivo": u"forma sem suporte: {0}".format(type(extrusao).__name__),
+            })
+            continue
+
+        indice = len(formas)
         esboco = extrusao.Sketch
         plano = esboco.SketchPlane.GetPlane()
 
@@ -342,7 +357,7 @@ def ler_formas(doc):
         })
         indice_por_id[_id_valor(extrusao.Id)] = indice
 
-    return formas, indice_por_id
+    return formas, indice_por_id, lacunas
 
 
 # --------------------------------------------------------------------------
@@ -493,10 +508,10 @@ def extrair(doc):
         )
 
     parametros, tipos = ler_parametros(doc)
-    formas, indice_por_id = ler_formas(doc)
+    formas, indice_por_id, lacunas_de_forma = ler_formas(doc)
     cotas, alinhamentos, lacunas = ler_cotas(doc, indice_por_id)
     combinacoes, lacunas_de_corte = ler_combinacoes(doc, indice_por_id)
-    lacunas = lacunas + lacunas_de_corte
+    lacunas = lacunas_de_forma + lacunas + lacunas_de_corte
 
     especificacao = {
         u"versao_schema": rfaspec.SCHEMA_VERSION,

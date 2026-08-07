@@ -16,3 +16,7 @@ Journal*.txt
 # Windows
 Thumbs.db
 desktop.ini
+
+# Lote de famílias reais copiado para inventário
+out/lote/
+out/lote.txt
