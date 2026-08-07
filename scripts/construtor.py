@@ -36,9 +36,10 @@ from Autodesk.Revit.DB import (  # noqa: E402
     Transaction, XYZ, Line, Arc, Plane, SketchPlane,
     CurveArray, CurveArrArray, ReferenceArray, CombinableElementArray,
     FilteredElementCollector, View, ViewType, ReferencePlane,
-    Options, Solid, PlanarFace,
-    BuiltInParameter, SpecTypeId, GroupTypeId,
+    Options, Solid, PlanarFace, Category,
+    BuiltInParameter, BuiltInCategory, SpecTypeId, GroupTypeId,
 )
+from System import Enum  # noqa: E402
 
 mm = rfaspec.mm_para_interno
 log = rfaspec.log
@@ -134,6 +135,42 @@ _GRUPOS = {
 # Parâmetros builtin do template (Model, Manufacturer, ...) já existem no
 # destino; só os de família criados pelo autor precisam ser recriados.
 _GRUPO_PADRAO = GroupTypeId.Geometry
+
+
+def ajustar_categoria(doc, especificacao):
+    u"""Põe a família na categoria da origem, seja qual for o template usado.
+
+    O template de destino nem sempre existe: esta máquina só tem os Generic
+    Model instalados para o Revit 2023, então uma família de Mechanical
+    Equipment sairia com a categoria errada. Trocar `OwnerFamily.FamilyCategory`
+    resolve sem depender do que está instalado — e o id de BuiltInCategory é
+    estável entre versões, ao contrário do nome, que é localizado.
+
+    Categoria errada não é detalhe: muda agendamento, filtros, visibilidade e
+    o comportamento de conectores MEP.
+    """
+    identidade = especificacao.get(u"identidade") or {}
+    id_categoria = identidade.get(u"categoria_id")
+    if id_categoria is None:
+        return
+
+    atual = doc.OwnerFamily.FamilyCategory
+    if atual is not None and rfaspec.id_inteiro(atual.Id) == id_categoria:
+        return  # o template já nasceu na categoria certa
+
+    try:
+        builtin = Enum.ToObject(BuiltInCategory, id_categoria)
+        categoria = Category.GetCategory(doc, builtin)
+        if categoria is None:
+            raise ValueError(u"categoria não existe neste documento")
+        doc.OwnerFamily.FamilyCategory = categoria
+        doc.Regenerate()
+    except Exception as erro:
+        _pular(
+            u"categoria da família ({0})".format(
+                identidade.get(u"categoria_nome") or id_categoria),
+            u"não foi possível aplicar: {0}".format(unicode(erro)[:120]),  # noqa: F821
+        )
 
 
 def construir_parametros(doc, especificacao):
@@ -687,7 +724,17 @@ def construir_tipos(doc, especificacao, parametros, ja_criado=None):
     for tipo in especificacao[u"tipos"]:
         if tipo[u"nome"] == ja_criado:
             continue
-        gerenciador.NewType(tipo[u"nome"])  # vira o tipo corrente
+
+        # Um tipo ruim não pode derrubar a família inteira. Caso real do
+        # acervo: uma família da Sodramar tem um tipo chamado " " (um espaço).
+        # O Revit deixa esse tipo EXISTIR mas recusa criá-lo pela API, com
+        # "The value cannot be empty. Parameter name: typeName".
+        try:
+            gerenciador.NewType(tipo[u"nome"])  # vira o tipo corrente
+        except Exception as erro:
+            _pular(u"tipo {0!r}".format(tipo[u"nome"]), unicode(erro)[:120])  # noqa: F821
+            continue
+
         _aplicar_valores_do_tipo(gerenciador, tipo, parametros, de_comprimento)
 
     doc.Regenerate()
@@ -731,6 +778,10 @@ def principal():
     transacao.Start()
     try:
         vista = _vista_de_planta(doc)
+
+        # Categoria antes de tudo: trocá-la depois de existir geometria e
+        # parâmetros é bem mais arriscado.
+        ajustar_categoria(doc, especificacao)
 
         parametros = construir_parametros(doc, especificacao)
         # Tipo corrente da origem PRIMEIRO: a geometria do spec foi

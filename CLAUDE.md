@@ -211,15 +211,44 @@ e `aec:material` (não `spec.number` / `reference:material` — prefixo diferent
 do que se imagina), `string:url`, `piping:pipeSize`, `piping:flow`,
 `piping:temperature`, `electrical:frequency|potential|power`. Já adicionadas.
 
+### Primeira família REAL convertida — 2026-08-07
+
+`New SD 25-40 - SODRAMAR.rfa` (2 MB, Mechanical Equipment, 29 formas,
+0 aninhadas) atravessou leitor → construtor → validador em 2025 → 2023.
+
+- Geometria: **281.019.688 → 283.045.768 mm³ (0,72% de diferença)**
+- 28 de 29 formas lidas
+- 12 divergências de parâmetro, 32 itens não reproduzidos
+
+Não aprovou — e não deveria. O valor está em ter cada lacuna nomeada.
+
+**Quatro coisas que só apareceram em família real** (nenhuma existiria numa
+fixture escrita por quem já sabe o que espera):
+
+1. `Sketch loops cannot be obtained` — o Revit se recusa a devolver o esboço
+   de certas formas. **Uma forma ilegível derrubava a leitura da família
+   inteira**; agora cada forma é isolada e vira lacuna com o motivo real.
+2. **Categoria sem template disponível.** A família é Mechanical Equipment,
+   mas esta máquina só tem Generic Model instalado para o 2023. Resolvido com
+   `OwnerFamily.FamilyCategory` — que também é a resposta certa em produção,
+   onde não se controla o que está instalado no destino.
+3. **Tipo chamado `" "`** (um espaço). O Revit deixa existir mas recusa criar
+   pela API: `The value cannot be empty. Parameter name: typeName`.
+4. `The storage type of family parameter is not a double type` — atribuir
+   valor a parâmetro sem checar o StorageType real.
+
 ### Próximo passo
 
-Ordem ditada pelo inventário, não por preferência:
+Ordem ditada pelo relatório de fidelidade da família real:
 
-1. **Sweep** — 284 ocorrências, de longe o maior retorno
-2. **Revolution** (63) e **Blend** (25)
-3. **Famílias aninhadas** — 23 de 25 famílias dependem
-4. **Conectores MEP** — 25 de 25; para o acervo P-LAB não é opcional
-5. Rodar o ciclo completo numa família real e medir a fidelidade de verdade
+1. **Associações de parâmetro** — 17 dos 32 itens. `_BUILTIN_ASSOCIAVEIS` só
+   cobre 2 builtins; famílias reais associam Material, visibilidade e outros.
+2. **Parâmetros compartilhados** — 8 itens. Exige lidar com shared parameter
+   file (ou recriar via `ExternalDefinition`).
+3. **StorageType antes de `Set`** — 4 itens, correção mecânica.
+4. **Sweep** (81 ocorrências) e **SweptBlend** (21).
+5. **Famílias aninhadas** — 20 de 27 famílias; 5 são só aninhadas.
+6. **Conectores MEP** — 26 de 27.
 
 ## 7. Armadilhas já pagas — NÃO repetir
 

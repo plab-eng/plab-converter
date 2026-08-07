@@ -266,8 +266,11 @@ def _curva_para_dicionario(curva):
             u"meio": _ponto(curva.Evaluate(0.5, True)),
         }
     # Falha em voz alta: uma curva silenciosamente ignorada vira família errada.
+    # Quem chama isola a forma e transforma isto em lacuna — famílias reais têm
+    # splines e elipses, e perder a forma inteira com registro é honesto;
+    # aproximá-la por reta não seria.
     raise ValueError(
-        u"Curva de perfil não suportada na Fase 0: {0}".format(type(curva).__name__)
+        u"curva de perfil sem suporte: {0}".format(type(curva).__name__)
     )
 
 
@@ -328,18 +331,32 @@ def ler_formas(doc):
 
     for elemento in todas:
         indice = len(formas)
+        classe = type(elemento).__name__
 
-        if isinstance(elemento, Extrusion):
-            registro = _ler_extrusao(elemento)
-        elif isinstance(elemento, Revolution):
-            registro = _ler_revolucao(elemento)
-        else:
+        # Uma forma ilegível NUNCA pode derrubar a leitura da família inteira.
+        # Famílias reais têm esboços que o Revit se recusa a devolver como
+        # laços ("Sketch loops cannot be obtained") e curvas fora da cobertura
+        # (splines, elipses). Cada forma é isolada: falha vira lacuna, com o
+        # motivo real, e o resto da família continua sendo lido.
+        registro = None
+        motivo = u"forma sem suporte: {0}".format(classe)
+        try:
+            if isinstance(elemento, Extrusion):
+                registro = _ler_extrusao(elemento)
+                motivo = u"Extrusion sem dados suficientes para reconstruir"
+            elif isinstance(elemento, Revolution):
+                registro = _ler_revolucao(elemento)
+                motivo = u"Revolution sem eixo legível"
+        except Exception as erro:
             registro = None
+            motivo = u"{0} ilegível: {1}".format(
+                classe, rfaspec.para_unicode(str(erro))[:120])
 
         if registro is None:
             lacunas.append({
                 u"elemento_id": _id_valor(elemento.Id),
-                u"motivo": u"forma sem suporte: {0}".format(type(elemento).__name__),
+                u"classe": classe,
+                u"motivo": motivo,
             })
             continue
 
