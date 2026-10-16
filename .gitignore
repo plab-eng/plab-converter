@@ -20,3 +20,6 @@ desktop.ini
 # Lote de famílias reais copiado para inventário
 out/lote/
 out/lote.txt
+
+# Claude Code: configuracao pessoal desta maquina
+.claude/settings.local.json
