@@ -368,11 +368,42 @@ Confirmado em 2023, 2024 e 2025 da mesma família:
   **2045/2066 (2023) e 2056/2077 (2024) decodificam exatamente até o
   trailer**. As 21 falhas são as mesmas nas duas versões.
 
-**Aberto:** a espécie `0x0a` (`ClassDefinitionRef.m_ref`) NÃO tem 8 bytes
-fixos (`af 00 00 00 00 00 ff ff` num registro, `86 10 ff ff ff ff 3c 01` em
-outro) — explica a maior parte das 21 falhas. Depois disso: os corpos dos
-elementos (a parte da partição depois da cadeia de headers, ~75% dos bytes),
-começando por um `ReferencePlane` da fixture.
+**Etapa 4 — segunda rodada (16/10).** Regras novas, todas medidas:
+- espécie `0x0a` = **u16 tag de classe** (é o `ClassDefinitionRef.m_ref`: a
+  classe REAL do elemento — `Viewer3d`, `FamilySymbol`, `CurveElem`…);
+- **ponteiro** (`classe/0x01..03`) = `u32 índice`: `0` nulo; `ffffffff` objeto
+  novo → `u16 tag` e o **corpo vem ADIADO**, depois de todos os campos da
+  classe que o contém, na ordem dos ponteiros; outro valor = referência a
+  objeto já existente (ex.: `m_pDoc = 1`), sem tag nem corpo;
+- array fixo (`mod 0x10` com contagem no dicionário) = itens sem prefixo
+  (`Outline.m_minmax` = 2 × 3 f64);
+- container de ponteiros (`classe/0x51..53`) = `u32 n` + n ponteiros;
+- string = `u32 n caracteres` + UTF-16LE (ex.: ForgeTypeId
+  `'autodesk.unit.symbol:degree-1.0.1'`); GUID = 16 bytes;
+- **corpos dos elementos** vêm depois da cadeia de headers, na mesma ordem,
+  com moldura `id ; u32 ? ; u32 tam ; u16 tag ; corpo ; u32 tam`.
+
+Cobertura (`dados.py --varrer` headers, `--corpos` corpos), 3 famílias × 3 versões:
+
+| | Headers | Corpos |
+|---|---|---|
+| fixture 2023/2024/2025 | 100% | 92% (1.902/2.066) |
+| New SD 2023/2024/2025 | 100% | 76% (1.909/2.515) |
+| real2 2023/2024/2025 | 100% | 74% (1.962/2.650) |
+
+As contagens de falha são **iguais nas três versões** de cada família: são
+casos de estrutura não mapeados, não erro de versão. Lista nomeada pelo
+`--corpos`; os maiores: `CategoryElem` (+8 bytes), `LinePatternElem` (+2),
+`RefPlane.m_paramSet` e `m_faceHistTable` (container de outro formato),
+`LinearDimString`, strings longas lidas de lugar errado (sintoma de desvio
+anterior). A região depois dos corpos (~20% da partição) ainda não foi
+olhada — provável conteúdo de famílias aninhadas/outros documentos.
+
+**Próximo:** fechar as falhas de corpo pela lista (`--corpos`), depois
+olhar `Global/Latest`/`ElemTable` e só então escrever o PRIMEIRO salto
+(re-serializar 2024 → 2023 com tags renumerados e ids estreitados) e
+testar round-trip byte a byte (2023 → decodifica → re-codifica = mesmo
+arquivo) antes de qualquer tradução.
 
 ### Próximo passo (ver RELATORIO.md §6)
 
