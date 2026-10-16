@@ -332,6 +332,23 @@ inteiro (sobram só 8 bytes de zero no fim):
 | 2023→2022 | 117 | 80 | 55 | 32 |
 | 2022→2021 | 151 | 93 | 57 | 34 |
 
+**2026 e 2027 adicionados (16/10, bibliotecas `RVT 2026/2027\Libraries`):**
+mesma gramática, consumidos por inteiro, nenhuma espécie nova.
+
+| Versão | Classes | Campos |
+|---|---|---|
+| 2026 | 4.690 | 12.558 |
+| 2027 | 4.757 | 13.080 |
+
+| Salto | Só na nova | Alteradas | c/ campo novo | c/ campo sumido | Só reordenadas |
+|---|---|---|---|---|---|
+| 2027→2026 | 98 | 241 | 157 | 31 | 6 |
+| 2026→2025 | 106 | 84 | 61 | 32 | 0 |
+
+**O caso comercial 2026→2025 é o salto mais leve:** sem reordenação e com
+ElementId u64 nas duas pontas (`Identifier.m_id64` em 2025, 2026 e 2027).
+Só 2024→2023 muda a largura dos ids.
+
 **2024→2023 é o salto pesado:** 242 classes só **reordenaram campos** (o 2024
 pôs os campos ElementId na frente; o 2023 os tem em ordem alfabética). Se o
 dado do elemento segue a ordem do dicionário, o tradutor reordena 242 classes
@@ -339,8 +356,12 @@ nesse salto — hipótese forte para as conexões que o rvtconvert quebrou.
 Espécie de tipo `0x0a` (primitivo, provável i64) aparece em
 `ClassDefinitionRef.m_ref`. Ponteiro (`0x0e` com nibble baixo 1–3) não leva ref.
 
-Esta máquina (Coordenador) tem Revit 2021, 2022, 2024 e 2025, **sem o 2023**;
-a validação final em 2023 exige a máquina que tem o 2023.
+Esta máquina (Coordenador) tem Revit 2021, 2022, 2024, 2025, **2026 (26.0.4) e
+2027 (27.3)**, **sem o 2023** (instalador indisponível). Consequência: aqui se
+validam os destinos 2021, 2022, 2024, 2025 e 2026; o destino 2023 só na
+máquina que tem o 2023. O corpus 2023 já existe (saídas da Rota A salvas por
+um Revit 2023 real). pyRevit (5.2) está anexado a 2021/2022/2024/2025, ainda
+NÃO a 2026/2027 — necessário para o corpus por upgrade nessas versões.
 
 **Corpus completo (16/10):** `fixture`, `newsd`, `real2` em 2023, 2024 (Revit
 2024.3) e 2025 (Revit 2025.4). A numeração da partição muda no upgrade
