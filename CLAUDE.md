@@ -275,6 +275,37 @@ como propriedade; builtins reais BLEND_END_PARAM/BLEND_START_PARAM, achados
 por sonda exaustiva depois de 5 candidatos errados); NewBlend com os dois
 perfis no mesmo plano = "Unexpected internal error: code 1".
 
+### Rota B (tradução do binário) — spike aberto em 2026-10-16
+
+Branch `spike/rota-b`. Prompt completo em `docs/PROMPT-rota-binaria.md`; não
+substitui a Rota A. Motivo: o rvtconvert.com (domínio de 12/10/2026) faz
+downgrade 2024–2027 → 2023 traduzindo o binário, preservando 89.180 UniqueIds
+num .rvt real, mas quebrando 6 conexões de tubo.
+
+**Etapa 1 concluída** — `tools/rvtbin/ole_inspect.py` (Python 3, `olefile`):
+- todo gzip do RVT/RFA tem o **CRC do trailer inválido de propósito**: `zlib`
+  com wbits=31 falha com "incorrect data check"; descomprimir o deflate CRU
+  (wbits=-15) a partir do fim do cabeçalho gzip;
+- `Formats/Latest` = 1 membro gzip no byte 0; `Global/*` = 8 bytes de prefixo
+  + 1 membro; `Partitions/N` = cabeçalho + vários membros (12 na fixture);
+- `Formats/Latest` é um dicionário de classes C++ com nome e campos
+  (`ADocument`, `m_elemTable`, `m_storedByRevitBuild`…); parte das classes tem
+  nome ofuscado (`bOVOO`, `ozNUJ`);
+- **o dicionário é fixo por BUILD do Revit, não por arquivo**: duas famílias
+  2023 (build 20241107) têm `Formats/Latest` byte a byte idênticos. O
+  rvtconvert usa o dicionário de um build 2023.0.x (20220503), provavelmente
+  para abrir em qualquer update do 2023. Consequência: a cadeia de saltos
+  precisa de UM dicionário de destino por versão, preferindo o build mais
+  antigo da versão.
+
+Esta máquina (Coordenador) tem Revit 2021, 2022, 2024 e 2025, **sem o 2023**.
+O corpus 2023→2024→2025 sai daqui subindo os `.rfa` 2023 já salvos pela Rota A
+(`familia_convertida.rfa` etc.); a validação final em 2023 exige a máquina que
+tem o 2023.
+
+**Próximo na Rota B:** etapa 2 (corpus por upgrade) e etapa 3 (parser do
+`Formats/Latest`).
+
 ### Próximo passo (ver RELATORIO.md §6)
 
 1. **Esboço ilegível** ("Sketch loops cannot be obtained") — defeito nº 1
