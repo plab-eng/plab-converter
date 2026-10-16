@@ -342,9 +342,37 @@ Espécie de tipo `0x0a` (primitivo, provável i64) aparece em
 Esta máquina (Coordenador) tem Revit 2021, 2022, 2024 e 2025, **sem o 2023**;
 a validação final em 2023 exige a máquina que tem o 2023.
 
-**Próximo na Rota B:** completar o corpus 2025; etapa 4 começa por decodificar
-o registro de UM elemento simples (ex.: plano de referência) nas partições de
-2023 e 2024 da mesma família e confirmar se o dado segue a ordem do dicionário.
+**Corpus completo (16/10):** `fixture`, `newsd`, `real2` em 2023, 2024 (Revit
+2024.3) e 2025 (Revit 2025.4). A numeração da partição muda no upgrade
+(`Partitions/0` no 2023 → `Partitions/1` no 2024/2025).
+
+**Etapa 4 — primeira rodada (16/10).** `tools/rvtbin/dados.py` decodifica dados
+guiado pelo dicionário (`--varrer` mede a cobertura de uma partição).
+Confirmado em 2023, 2024 e 2025 da mesma família:
+- **o dado segue a ordem dos campos do dicionário**, base antes dos campos
+  próprios — o tradutor pode ser 100% guiado pelo schema;
+- **ElementId: u32 no 2023, u64 no 2024+**, e isso está NO dicionário
+  (`Identifier.m_id` u32 → `Identifier.m_id64` u64). `Global/ElemTable` também
+  muda (registro de 28 → 40 bytes, ver rvt-rs `elem_table.rs`). Downgrade
+  2024→2023 = estreitar todo id (abortar se algum não couber em 32 bits);
+- **tags de classe aparecem no dado** (registro da partição, ponteiros,
+  cabeçalho do `ElemTable` = tag da classe `ElemTable`) → renumerar por nome a
+  cada salto. `ClassDefinitionRef.m_ref` também muda por versão (`0xaf` no
+  2023/2024, `0xb8` no 2025);
+- registro da cadeia da partição: `id (u32|u64) ; u32 tam ; u16 tag ; corpo ;
+  u32 tam` (tam conta do tag ao fim do corpo; o trailer repete — verificação
+  forte de que a decodificação está certa);
+- container (`classe/0x50`): `u32 n` + n itens; ponteiro (`classe/0x01..03`):
+  `u16 tag` da classe REAL (`ffff` = nulo) + corpo;
+- a cadeia inicial da partição é só `ElementHeader` (um por elemento):
+  **2045/2066 (2023) e 2056/2077 (2024) decodificam exatamente até o
+  trailer**. As 21 falhas são as mesmas nas duas versões.
+
+**Aberto:** a espécie `0x0a` (`ClassDefinitionRef.m_ref`) NÃO tem 8 bytes
+fixos (`af 00 00 00 00 00 ff ff` num registro, `86 10 ff ff ff ff 3c 01` em
+outro) — explica a maior parte das 21 falhas. Depois disso: os corpos dos
+elementos (a parte da partição depois da cadeia de headers, ~75% dos bytes),
+começando por um `ReferencePlane` da fixture.
 
 ### Próximo passo (ver RELATORIO.md §6)
 
