@@ -282,29 +282,69 @@ substitui a Rota A. Motivo: o rvtconvert.com (domínio de 12/10/2026) faz
 downgrade 2024–2027 → 2023 traduzindo o binário, preservando 89.180 UniqueIds
 num .rvt real, mas quebrando 6 conexões de tubo.
 
+**Referência externa:** o **rvt-rs** (github.com/DrunkOnJava/rvt-rs,
+Apache-2.0, v0.4.0 de 28/09/2026, se declara clean-room) já lê o
+`Formats/Latest` de 2016–2026, registros de elemento 2024/2025 e tem escritor
+que preserva bytes. Usamos a gramática dele como ponto de partida e
+**conferimos tudo aqui** (CRC e consumo total do stream). Reaproveitar código
+dele exige manter a atribuição Apache.
+
 **Etapa 1 concluída** — `tools/rvtbin/ole_inspect.py` (Python 3, `olefile`):
-- todo gzip do RVT/RFA tem o **CRC do trailer inválido de propósito**: `zlib`
-  com wbits=31 falha com "incorrect data check"; descomprimir o deflate CRU
-  (wbits=-15) a partir do fim do cabeçalho gzip;
+- **paginação**: streams comprimidos são gravados em páginas de 65.249 bytes
+  (64.896 de dado + 353 de checksum/ECC no fim de cada página cheia). Remover
+  os 353 bytes ANTES de descomprimir; aí o CRC do gzip confere em todos os
+  streams. ⚠️ Errata 16/10: a primeira versão desta nota dizia "CRC inválido
+  de propósito" — era o lixo das páginas. Sem remover, o deflate segue
+  "decodificando" bytes errados SEM dar erro depois da 1ª página;
 - `Formats/Latest` = 1 membro gzip no byte 0; `Global/*` = 8 bytes de prefixo
-  + 1 membro; `Partitions/N` = cabeçalho + vários membros (12 na fixture);
-- `Formats/Latest` é um dicionário de classes C++ com nome e campos
-  (`ADocument`, `m_elemTable`, `m_storedByRevitBuild`…); parte das classes tem
-  nome ofuscado (`bOVOO`, `ozNUJ`);
-- **o dicionário é fixo por BUILD do Revit, não por arquivo**: duas famílias
-  2023 (build 20241107) têm `Formats/Latest` byte a byte idênticos. O
-  rvtconvert usa o dicionário de um build 2023.0.x (20220503), provavelmente
-  para abrir em qualquer update do 2023. Consequência: a cadeia de saltos
-  precisa de UM dicionário de destino por versão, preferindo o build mais
-  antigo da versão.
+  + 1 membro; `Partitions/N` = cabeçalho + vários membros gzip;
+- **o dicionário é fixo por VERSÃO do Revit** (não por build nem por arquivo):
+  2024.0 e 2024.3, 2025.0 e 2025.4, `.rfa` e `.rvt` dão o mesmo hash. O
+  rvtconvert usa exatamente o dicionário 2023 padrão. ⚠️ Errata: a nota
+  anterior ("fixo por build", "nomes ofuscados `bOVOO`") veio da descompressão
+  errada.
 
-Esta máquina (Coordenador) tem Revit 2021, 2022, 2024 e 2025, **sem o 2023**.
-O corpus 2023→2024→2025 sai daqui subindo os `.rfa` 2023 já salvos pela Rota A
-(`familia_convertida.rfa` etc.); a validação final em 2023 exige a máquina que
-tem o 2023.
+**Etapa 2 (corpus) — parcial.** `tools/rvtbin/corpus_upgrade.py` (IronPython,
+via pyRevit Routes) abre cada `.rfa` em 2º plano e salva cópia na versão do
+Revit corrente. Corpus em `out/rotaB/corpus/<ano>/` (fora do git):
+2023 = `fixture`, `newsd`, `real2` (saídas da Rota A, salvas por Revit 2023
+real); **2024 gerado** (Revit 2024.3, sem erro); **2025 pendente** (Revit 2025
+fechado). Dicionários de 2021/2022/2024/2025 vêm das bibliotecas em
+`C:\ProgramData\Autodesk\RVT <ano>\Libraries` (conteúdo da Autodesk, sem cliente).
 
-**Próximo na Rota B:** etapa 2 (corpus por upgrade) e etapa 3 (parser do
-`Formats/Latest`).
+**Etapa 3 concluída** — `tools/rvtbin/schema.py` (parser, gramática no
+docstring) e `tools/rvtbin/schema_diff.py` (diff por NOME de classe — os tags
+são ordinais e mudam entre versões). Os 5 dicionários são consumidos por
+inteiro (sobram só 8 bytes de zero no fim):
+
+| Versão | Classes | Campos |
+|---|---|---|
+| 2021 | 4.168 | 11.512 |
+| 2022 | 4.307 | 11.709 |
+| 2023 | 4.418 | 11.866 |
+| 2024 | 4.492 | 11.982 |
+| 2025 | 4.600 | 12.296 |
+
+| Salto | Classes só na versão nova | Classes alteradas | c/ campo novo | c/ campo sumido |
+|---|---|---|---|---|
+| 2025→2024 | 123 | 70 | 52 | 22 |
+| 2024→2023 | 103 | 339 | 63 | 43 |
+| 2023→2022 | 117 | 80 | 55 | 32 |
+| 2022→2021 | 151 | 93 | 57 | 34 |
+
+**2024→2023 é o salto pesado:** 242 classes só **reordenaram campos** (o 2024
+pôs os campos ElementId na frente; o 2023 os tem em ordem alfabética). Se o
+dado do elemento segue a ordem do dicionário, o tradutor reordena 242 classes
+nesse salto — hipótese forte para as conexões que o rvtconvert quebrou.
+Espécie de tipo `0x0a` (primitivo, provável i64) aparece em
+`ClassDefinitionRef.m_ref`. Ponteiro (`0x0e` com nibble baixo 1–3) não leva ref.
+
+Esta máquina (Coordenador) tem Revit 2021, 2022, 2024 e 2025, **sem o 2023**;
+a validação final em 2023 exige a máquina que tem o 2023.
+
+**Próximo na Rota B:** completar o corpus 2025; etapa 4 começa por decodificar
+o registro de UM elemento simples (ex.: plano de referência) nas partições de
+2023 e 2024 da mesma família e confirmar se o dado segue a ordem do dicionário.
 
 ### Próximo passo (ver RELATORIO.md §6)
 
