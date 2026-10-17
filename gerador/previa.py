@@ -46,14 +46,12 @@ def _faces_prisma(pontos, direcao, espessura):
     return faces
 
 
-def _faces_revolucao(perfil, centro, eixo):
-    cx, cy, cz = centro
+def _faces_revolucao(perfil, centro, u, v):
+    w = (u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0])
     passos = _LADOS_CILINDRO
 
     def ponto(r, h, ang):
-        if eixo == "z":
-            return (cx + r * math.cos(ang), cy + r * math.sin(ang), cz + h)
-        return (cx + r * math.cos(ang), cy + h, cz + r * math.sin(ang))
+        return tuple(centro[e] + h * u[e] + r * (math.cos(ang) * v[e] + math.sin(ang) * w[e]) for e in range(3))
 
     faces = []
     for (r0, h0), (r1, h1) in zip(perfil, perfil[1:] + perfil[:1]):

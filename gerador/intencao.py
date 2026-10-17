@@ -24,7 +24,7 @@ CATEGORIAS = {
     "Pipe Fittings": -2008049,
 }
 
-FACES_DE_CONECTOR = ("topo", "base")
+FACES_DE_CONECTOR = ("topo", "base", "inicio", "fim")
 
 PADROES = {
     "caixa": {"obrigatorios": ("largura", "profundidade", "altura"),
@@ -35,7 +35,7 @@ PADROES = {
     # da cópia: k (1..n) no linear; i (1..linhas) e j (1..colunas) no retangular.
     # Estáticos (G4): só números; geometria fixa, sem cotas nem travas.
     "perfil_extrudado": {"obrigatorios": ("plano", "pontos", "inicio", "espessura"), "opcionais": ()},
-    "revolucao": {"obrigatorios": ("eixo", "perfil", "centro"), "opcionais": ()},
+    "revolucao": {"obrigatorios": ("eixo", "perfil", "centro"), "opcionais": ("angulo",)},
     "array_linear": {"obrigatorios": ("item", "n"), "opcionais": ("n_max",)},
     "array_retangular": {"obrigatorios": ("item", "linhas", "colunas"), "opcionais": ()},
 }
@@ -79,8 +79,10 @@ def _conferir_estatico(padrao, args, onde, problemas):
             if not _numero(args.get(chave)):
                 problemas.append(f"{onde}.{chave}: número (mm)")
     else:
-        if args.get("eixo") not in ("z", "y"):
-            problemas.append(f"{onde}.eixo: 'z' ou 'y'")
+        if args.get("eixo") not in ("z", "y", "xz"):
+            problemas.append(f"{onde}.eixo: 'z', 'y' ou 'xz' (com angulo)")
+        if args.get("eixo") == "xz" and not _numero(args.get("angulo")):
+            problemas.append(f"{onde}.angulo: graus a partir da vertical (eixo 'xz')")
         centro = args.get("centro")
         if not (isinstance(centro, list) and len(centro) == 3 and all(_numero(v) for v in centro)):
             problemas.append(f"{onde}.centro: [x, y, z] em mm")

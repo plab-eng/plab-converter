@@ -57,7 +57,7 @@ class _Contexto:
         self.sinais = []             # (descrição, expressão, sinal esperado)
         self.lacunas = []
         self.usa_radial = False
-        self.faces_de_conector = {}  # componente -> (índice da forma, valores -> {face: centro})
+        self.faces_de_conector = {}  # componente -> (índice da forma, valores -> {face: (centro, normal)})
         self.extensao_plano = 2000.0
 
     def expr(self, texto):
@@ -280,8 +280,8 @@ def padrao_cilindro(ctx, comp, v0, visivel=None):
                 {"tipo": "esboco", "forma": indice, "laco": 0, "curva": 0}]})
 
     ctx.faces_de_conector[comp["id"]] = (indice, lambda valores: {
-        "base": [0.0, 0.0, ex.avaliar(base, valores)],
-        "topo": [0.0, 0.0, ex.avaliar(base, valores) + ex.avaliar(altura, valores)]})
+        "base": ([0.0, 0.0, ex.avaliar(base, valores)], [0.0, 0.0, -1.0]),
+        "topo": ([0.0, 0.0, ex.avaliar(base, valores) + ex.avaliar(altura, valores)], [0.0, 0.0, 1.0])})
 
     def cilindro(valores):
         r = ex.avaliar(diametro, valores) / 2
@@ -354,41 +354,55 @@ def padrao_perfil_extrudado(ctx, comp, v0, visivel=None):
     ctx.geometrias.append(lambda valores: (minimo, maximo, volume, 0.1, primitiva))
 
 
-def padrao_revolucao(ctx, comp, v0, visivel=None):
-    """Perfil (raio, posição no eixo) girado 360° (globo, cúpula, peça torneada).
+def _base_do_eixo(args):
+    """(u, v, normal do plano): u = direção do eixo, v = raio no plano do esboço."""
+    if args["eixo"] == "z":
+        return [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]
+    if args["eixo"] == "y":
+        return [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]
+    a = math.radians(float(args["angulo"]))  # "xz": a partir da vertical, inclinando para +x
+    return [math.sin(a), 0.0, math.cos(a)], [math.cos(a), 0.0, -math.sin(a)], [0.0, 1.0, 0.0]
 
-    eixo "z": vertical por (cx, cy), posição = altura acima de cz;
-    eixo "y": horizontal por (cx, cz), posição = deslocamento em y a partir de cy.
+
+def padrao_revolucao(ctx, comp, v0, visivel=None):
+    """Perfil (raio, posição no eixo) girado 360° (globo, cúpula, ramal de conexão).
+
+    eixo "z" vertical, "y" horizontal, "xz" inclinado no plano XZ por `angulo`
+    graus a partir da vertical. `centro` é o ponto do eixo onde a posição é 0.
     """
     args = comp["args"]
     pontos = [[float(r), float(h)] for r, h in args["perfil"]]
-    cx, cy, cz = [float(v) for v in args["centro"]]
+    c = [float(v) for v in args["centro"]]
     if any(r < 0 for r, _ in pontos):
         raise CompilacaoRecusada([f"{comp['id']}: raio negativo (o perfil não pode cruzar o eixo)"])
     area, momento = _area_e_momento(pontos)
     if abs(area) < 1.0:
         raise CompilacaoRecusada([f"{comp['id']}: perfil sem área"])
+    u, v, normal = _base_do_eixo(args)
+    w = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]]
+
+    def ponto(r, h, cos_t=1.0, sen_t=0.0):
+        return [c[e] + h * u[e] + r * (cos_t * v[e] + sen_t * w[e]) for e in range(3)]
+
     hs = [h for _, h in pontos]
-    if args["eixo"] == "z":
-        mundo = [[cx + r, cy, cz + h] for r, h in pontos]
-        plano = {"normal": [0.0, 1.0, 0.0], "origem": [cx, cy, cz]}
-        eixo = {"inicio": [cx, cy, cz + min(hs)], "fim": [cx, cy, cz + max(hs)]}
-    else:
-        mundo = [[cx + r, cy + h, cz] for r, h in pontos]
-        plano = {"normal": [0.0, 0.0, 1.0], "origem": [cx, cy, cz]}
-        eixo = {"inicio": [cx, cy + min(hs), cz], "fim": [cx, cy + max(hs), cz]}
+    mundo = [ponto(r, h) for r, h in pontos]
+    plano = {"normal": normal, "origem": c}
+    eixo = {"inicio": ponto(0.0, min(hs)), "fim": ponto(0.0, max(hs))}
     perfil = [[_linha(p, q) for p, q in zip(mundo, mundo[1:] + mundo[:1])]]
-    _forma_estatica(ctx, comp, "revolucao", perfil, plano,
-                    {"eixo": eixo, "angulo_inicial": 0.0, "angulo_final": 2 * math.pi})
+    indice = _forma_estatica(ctx, comp, "revolucao", perfil, plano,
+                             {"eixo": eixo, "angulo_inicial": 0.0, "angulo_final": 2 * math.pi})
+    # bbox: amostra do giro (72 posições); a tolerância cobre o intervalo entre amostras.
+    amostras = [ponto(r, h, math.cos(t), math.sin(t)) for r, h in pontos
+                for t in (2 * math.pi * k / 72 for k in range(72))]
+    minimo = [min(p[e] for p in amostras) for e in range(3)]
+    maximo = [max(p[e] for p in amostras) for e in range(3)]
     rmax = max(r for r, _ in pontos)
-    if args["eixo"] == "z":
-        minimo, maximo = [cx - rmax, cy - rmax, cz + min(hs)], [cx + rmax, cy + rmax, cz + max(hs)]
-    else:
-        minimo, maximo = [cx - rmax, cy + min(hs), cz - rmax], [cx + rmax, cy + max(hs), cz + rmax]
     volume = 2 * math.pi * abs(momento)  # Pappus: 2π ∫∫ r dA
-    primitiva = {"revolucao": {"perfil": pontos, "centro": [cx, cy, cz], "eixo": args["eixo"]}}
-    # Superfície curva medida pela malha: tolerância proporcional ao raio.
+    primitiva = {"revolucao": {"perfil": pontos, "centro": c, "u": u, "v": v}}
     ctx.geometrias.append(lambda valores: (minimo, maximo, volume, max(0.5, 0.004 * 2 * rmax), primitiva))
+    ctx.faces_de_conector[comp["id"]] = (indice, lambda valores: {
+        "inicio": (ponto(0.0, min(hs)), [-x for x in u]),
+        "fim": (ponto(0.0, max(hs)), list(u))})
 
 
 PADROES = {"caixa": padrao_caixa, "cilindro": padrao_cilindro,
@@ -427,20 +441,19 @@ def _expandir(ctx, comp):
 # Tipos e assinatura
 # --------------------------------------------------------------------------
 
-NORMAIS_DE_FACE = {"topo": [0.0, 0.0, 1.0], "base": [0.0, 0.0, -1.0]}
-
-
 def _conectores(ctx, intencao):
     """Conectores da FamilySpec e o teste: onde cada um deve estar, por tipo."""
     saida, esperados = [], []
     for indice, item in enumerate(intencao.get("conectores") or []):
         if item["componente"] not in ctx.faces_de_conector:
             raise CompilacaoRecusada([f"conectores[{indice}]: componente {item['componente']!r} não tem "
-                                      "face de conector (por enquanto só cilindro)"])
+                                      "face de conector (cilindro e revolução)"])
         forma, centros = ctx.faces_de_conector[item["componente"]]
+        if item["face"] not in centros(_valores_base(intencao, ctx.fixos)):
+            raise CompilacaoRecusada([f"conectores[{indice}]: face {item['face']!r} não existe nesse padrão"])
         diametro = ctx.expr(str(item["diametro"]))
         conector = {"dominio": "tubo", "sistema": item.get("sistema") or "Fitting",
-                    "face": {"forma": forma, "normal": NORMAIS_DE_FACE[item["face"]]},
+                    "face": {"forma": forma, "normal": centros(_valores_base(intencao, ctx.fixos))[item["face"]][1]},
                     "ligado_a": item.get("ligado_a"), "diametro_rotulo": None, "diametro_mm": None}
         if ex.eh_constante(diametro):
             conector["diametro_mm"] = ex.avaliar(diametro, {})
@@ -487,19 +500,39 @@ def _tipos_de_teste(intencao, fixos):
     return tipos
 
 
+# O Revit calcula o volume de superfície curva sobre uma malha de cordas de ~2 mm
+# (medido na G5: junção 45° com r = 20, 50 e 100 mm deu -0,153%, -0,0165% e
+# -0,0066%, erro ~ (2/r)²/6). A régua de volume de peça curva acompanha isso,
+# com folga de 1,5x; peça plana fica na régua do validador (0,01%).
+CORDA_DA_MALHA_MM = 2.0
+
+
+def _tolerancia_de_volume(primitiva, volume):
+    raios = []
+    if "cilindro" in primitiva:
+        raios = [primitiva["cilindro"][2]]
+    elif "revolucao" in primitiva:
+        raios = [r for r, _ in primitiva["revolucao"]["perfil"] if r > 0]
+    if not raios:
+        return 0.0
+    return volume * 1.5 * (CORDA_DA_MALHA_MM / min(raios)) ** 2 / 6
+
+
 def _assinatura(ctx, valores):
-    minimo, maximo, volume, tolerancia = None, None, 0.0, 0.1
+    minimo, maximo, volume, tolerancia, tolerancia_volume = None, None, 0.0, 0.1, 0.0
     for geometria in ctx.geometrias:
         resultado = geometria(valores)
         if resultado is None:
             continue  # cópia oculta neste tipo
-        mn, mx, vol, tol, _ = resultado
+        mn, mx, vol, tol, primitiva = resultado
         minimo = mn if minimo is None else [min(a, b) for a, b in zip(minimo, mn)]
         maximo = mx if maximo is None else [max(a, b) for a, b in zip(maximo, mx)]
         volume += vol
         tolerancia = max(tolerancia, tol)
+        tolerancia_volume += _tolerancia_de_volume(primitiva, vol)
     return {"extensao_mm": [b - a for a, b in zip(minimo, maximo)], "minimo_mm": minimo,
-            "volume_mm3": volume, "tolerancia_extensao_mm": tolerancia}
+            "volume_mm3": volume, "tolerancia_extensao_mm": tolerancia,
+            "tolerancia_volume_mm3": tolerancia_volume}
 
 
 def _primitivas(ctx, valores):
@@ -581,7 +614,7 @@ def compilar(intencao, com_tipos_de_teste=True, fixos=None, imagem=None):
         medicoes[nome] = _assinatura(ctx, valores)
         if conectores_por_tipo:
             medicoes[nome]["conectores"] = [
-                {"origem_mm": centros(valores)[face], "normal": NORMAIS_DE_FACE[face],
+                {"origem_mm": centros(valores)[face][0], "normal": centros(valores)[face][1],
                  "diametro_mm": ex.avaliar(diametro, valores)}
                 for face, centros, diametro in conectores_por_tipo]
 

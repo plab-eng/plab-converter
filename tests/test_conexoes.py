@@ -31,3 +31,18 @@ def test_conectores_ligados_e_assinatura_por_tipo():
     esperados = spec["medicoes"]["DN100"]["conectores"]
     assert esperados == [{"origem_mm": [0.0, 0.0, 0.0], "normal": [0.0, 0.0, -1.0], "diametro_mm": 100.0},
                          {"origem_mm": [0.0, 0.0, 83.5], "normal": [0.0, 0.0, 1.0], "diametro_mm": 100.0}]
+
+
+def test_juncao_45_estatica_fecha_a_tabela():
+    import math
+    from gerador import conexoes
+    from tests.test_fichas import TIGRE
+    intencoes, problemas = conexoes.intencoes_do_produto(fichas.extrair(TIGRE), "Junção Simples", "f.png", "t.pdf")
+    assert problemas == [] and [d["tipos"][0]["nome"] for d in intencoes] == ["DN40", "DN100"]
+    spec = compilador.compilar(intencoes[1], com_tipos_de_teste=False)
+    assert spec["identidade"]["part_type"] == "Wye"
+    m = spec["medicoes"]["DN100"]
+    assert [round(v, 1) for v in m["extensao_mm"]] == [219.1, 100.0, 255.0]   # C, DN, A
+    ramal = m["conectores"][2]
+    assert ramal["normal"] == [math.sqrt(0.5), 0.0, math.sqrt(0.5)] and ramal["diametro_mm"] == 100.0
+    assert [c["ligado_a"] for c in spec["conectores"]] == [1, 0, None]

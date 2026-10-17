@@ -6,13 +6,14 @@ python -m gerador perguntas <modelo> [--saida perguntas.json]
 python -m gerador montar <modelo> --nome <familia> --imagem <arquivo> [--respostas r.json]
                          [--ficha extracao.json] [--preenchido-por usuario|regra|ia|ficha] --saida intencao.json
 python -m gerador ficha <ficha.pdf> [--modelo estante_portas_inferiores] --saida extracao.json
+python -m gerador conexoes <extracao.json> --produto "Junção Simples" --imagem ficha.png --pasta <dir>
 """
 
 import argparse
 import json
 import sys
 
-from . import compilador, fichas, intencao, modelos, orquestrar, previa
+from . import compilador, conexoes, fichas, intencao, modelos, orquestrar, previa
 
 # Modelos com tradução ficha -> respostas (por regra).
 TRADUTORES = {"estante_portas_inferiores": fichas.para_estante_portas_inferiores,
@@ -56,6 +57,11 @@ def main(argv=None):
     p_ficha.add_argument("pdf")
     p_ficha.add_argument("--modelo", choices=sorted(TRADUTORES))
     p_ficha.add_argument("--saida", required=True)
+    p_conexoes = sub.add_parser("conexoes", help="tabela por bitola -> uma intenção por DN (conexões)")
+    p_conexoes.add_argument("extracao")
+    p_conexoes.add_argument("--produto", required=True)
+    p_conexoes.add_argument("--imagem", required=True)
+    p_conexoes.add_argument("--pasta", required=True)
     args = parser.parse_args(argv)
 
     try:
@@ -101,6 +107,19 @@ def main(argv=None):
                                    tipos_da_ficha=extracao.get("tipos"))
             _escrever(json.dumps(dados, ensure_ascii=False, indent=2), args.saida)
             return 0
+        if args.comando == "conexoes":
+            import os
+            with open(args.extracao, encoding="utf-8") as arquivo:
+                extracao = json.load(arquivo)
+            lista, problemas = conexoes.intencoes_do_produto(extracao, args.produto, args.imagem, extracao.get("pdf"))
+            os.makedirs(args.pasta, exist_ok=True)
+            for dados in lista:
+                destino = os.path.join(args.pasta, f"{dados['tipos'][0]['nome']}.intencao.json")
+                _escrever(json.dumps(dados, ensure_ascii=False, indent=2), destino)
+                print(destino)
+            for problema in problemas:
+                print(f"fora: {problema}")
+            return 0 if lista else 3
         if args.comando == "ficha":
             extracao = fichas.extrair(fichas.ler_paginas(args.pdf))
             extracao["pdf"] = args.pdf

@@ -202,7 +202,10 @@ def _comparar(esperado, medido):
         return u"POSICAO_DIVERGE", [round(d, 3) for d in desvios_min]
     volume = esperado[u"volume_mm3"]
     desvio = abs(medido[u"volume_mm3"] - volume)
-    if desvio > max(abs(volume) * TOLERANCIA_VOLUME_RELATIVA, 1.0):
+    # Peça curva traz a própria régua de volume (erro da malha do Revit, ver
+    # CORDA_DA_MALHA_MM no compilador); peça plana fica nos 0,01%.
+    limite = max(abs(volume) * TOLERANCIA_VOLUME_RELATIVA, esperado.get(u"tolerancia_volume_mm3") or 0.0, 1.0)
+    if desvio > limite:
         return u"VOLUME_DIVERGE", round(100.0 * desvio / volume, 5)
     if esperado.get(u"conectores"):
         problema = _conferir_conectores(esperado[u"conectores"], medido.get(u"conectores") or [])
