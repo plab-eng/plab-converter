@@ -1171,6 +1171,15 @@ def estabelecer_tipo_corrente(doc, especificacao, parametros):
                u"'{0}'".format(tipo[u"nome"]))
 
     gerenciador = doc.FamilyManager
+    if not (tipo[u"nome"] or u"").strip():
+        # Caso real (famílias de roteamento da Ultrapex): o único tipo se chama
+        # " ". O Revit deixa existir, mas a API recusa criar ("The value cannot
+        # be empty"). Sem tipo corrente nada mais é construído, então ele nasce
+        # com nome legível e a troca vai para o relatório.
+        _pular(u"nome do tipo {0!r}".format(tipo[u"nome"]),
+               u"a API recusa nome vazio; criado como 'Padrao'")
+        tipo = dict(tipo)
+        tipo[u"nome"] = u"Padrao"
     gerenciador.NewType(tipo[u"nome"])  # vira o tipo corrente
     _aplicar_valores_do_tipo(gerenciador, tipo, parametros,
                              _nomes_de_comprimento(especificacao))
