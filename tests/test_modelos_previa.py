@@ -4,9 +4,10 @@ from PIL import Image
 from gerador import compilador, modelos, previa
 
 
-def test_lista_os_seis_modelos():
+def test_lista_os_modelos():
     nomes = [m["modelo"] for m in modelos.listar()]
-    assert nomes == ["armario", "bancada", "cadeira", "estante", "mesa_4_pes", "mesa_redonda"]
+    assert nomes == ["armario", "bancada", "cadeira", "estante", "estante_portas_inferiores",
+                     "mesa_4_pes", "mesa_redonda"]
 
 
 def test_perguntas_no_formato_das_receitas():

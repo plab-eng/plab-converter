@@ -50,10 +50,23 @@ def perguntas(nome, imagem=None):
     return saida
 
 
-def montar(nome, nome_familia, imagem, respostas=None, preenchido_por="usuario"):
-    """Intenção validada a partir do modelo e das respostas ({id: valor})."""
+def montar(nome, nome_familia, imagem, respostas=None, preenchido_por="usuario",
+           ficha=None, respostas_da_ficha=None, evidencias=None, padroes_da_ficha=None):
+    """Intenção validada a partir do modelo e das respostas ({id: valor}).
+
+    `respostas_da_ficha` vêm do extrator por regra (origem "ficha", com a
+    `evidencia` de cada valor); `respostas` do usuário vencem as da ficha.
+    `padroes_da_ficha` = o padrão que a ficha sugere para uma pergunta que ela
+    deixou aberta (ex.: porta 614 + rodapé 70); vale no lugar do padrão do modelo.
+    """
+    padroes_da_ficha = dict(padroes_da_ficha or {})
     modelo = carregar(nome)
+    da_ficha = dict(respostas_da_ficha or {})
+    evidencias = dict(evidencias or {})
     respostas = dict(respostas or {})
+    origem_de = {chave: "ficha" for chave in da_ficha}
+    origem_de.update({chave: preenchido_por for chave in respostas})
+    respostas = {**da_ficha, **respostas}
     desconhecidas = sorted(set(respostas) - {p["id"] for p in modelo["perguntas"]})
     if desconhecidas:
         raise RespostaInvalida(f"respostas para perguntas que o modelo não tem: {desconhecidas}")
@@ -63,6 +76,8 @@ def montar(nome, nome_familia, imagem, respostas=None, preenchido_por="usuario")
     registro = []
     problemas = []
     for p in modelo["perguntas"]:
+        if p["id"] in padroes_da_ficha:
+            p = dict(p, padrao=padroes_da_ficha[p["id"]])
         respondida = p["id"] in respostas
         valor = respostas.get(p["id"], p["padrao"])
         if not isinstance(valor, (int, float)) or isinstance(valor, bool):
@@ -76,17 +91,23 @@ def montar(nome, nome_familia, imagem, respostas=None, preenchido_por="usuario")
             problemas.append(f"{p['id']}: {valor} fora da faixa do modelo [{minimo}, {maximo}]")
             continue
         parametros[p["alvo"]]["padrao"] = valor
-        parametros[p["alvo"]]["origem"] = preenchido_por if respondida else "regra"
-        registro.append({"id": p["id"], "pergunta": p["pergunta"], "opcoes": p.get("opcoes"),
-                         "padrao": p["padrao"], "por_que": p["por_que"], "resposta": valor,
-                         "aceitou_padrao": not respondida})
+        parametros[p["alvo"]]["origem"] = origem_de.get(p["id"], "regra")
+        item = {"id": p["id"], "pergunta": p["pergunta"], "opcoes": p.get("opcoes"),
+                "padrao": p["padrao"], "por_que": p["por_que"], "resposta": valor,
+                "aceitou_padrao": not respondida,
+                "origem": origem_de.get(p["id"], "padrao_da_ficha" if p["id"] in padroes_da_ficha else "padrao")}
+        if p["id"] in evidencias:
+            item["evidencia"] = evidencias[p["id"]]
+        registro.append(item)
     if problemas:
         raise RespostaInvalida("respostas recusadas:\n- " + "\n- ".join(problemas))
 
     dados.update({
         "versao_intencao": "0.1",
         "nome": nome_familia,
-        "entradas": {"imagem": imagem, "ficha": None, "preenchido_por": preenchido_por},
+        # A origem de cada valor fica em parametros[].origem e perguntas[].origem.
+        "entradas": {"imagem": imagem, "ficha": ficha,
+                     "preenchido_por": "ficha" if da_ficha else preenchido_por},
         "tipos": [{"nome": "Padrao", "valores": {}}],
         "perguntas": registro,
         "lacunas_aceitas": [],

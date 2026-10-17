@@ -4,14 +4,18 @@ python -m gerador previa <intencao.json> --saida previa.png
 python -m gerador modelos
 python -m gerador perguntas <modelo> [--saida perguntas.json]
 python -m gerador montar <modelo> --nome <familia> --imagem <arquivo> [--respostas r.json]
-                         [--preenchido-por usuario|regra|ia|ficha] --saida intencao.json
+                         [--ficha extracao.json] [--preenchido-por usuario|regra|ia|ficha] --saida intencao.json
+python -m gerador ficha <ficha.pdf> [--modelo estante_portas_inferiores] --saida extracao.json
 """
 
 import argparse
 import json
 import sys
 
-from . import compilador, intencao, modelos, orquestrar, previa
+from . import compilador, fichas, intencao, modelos, orquestrar, previa
+
+# Modelos com tradução ficha -> respostas (por regra).
+TRADUTORES = {"estante_portas_inferiores": fichas.para_estante_portas_inferiores}
 
 
 def _escrever(texto, saida):
@@ -45,7 +49,12 @@ def main(argv=None):
     p_montar.add_argument("--imagem", required=True)
     p_montar.add_argument("--respostas")
     p_montar.add_argument("--preenchido-por", default="usuario", choices=intencao.PREENCHIDO_POR)
+    p_montar.add_argument("--ficha", help="saída do comando ficha (respostas por regra + evidências)")
     p_montar.add_argument("--saida", required=True)
+    p_ficha = sub.add_parser("ficha", help="ficha técnica PDF -> medidas por regra (sem IA)")
+    p_ficha.add_argument("pdf")
+    p_ficha.add_argument("--modelo", choices=sorted(TRADUTORES))
+    p_ficha.add_argument("--saida", required=True)
     args = parser.parse_args(argv)
 
     try:
@@ -78,9 +87,28 @@ def main(argv=None):
             if args.respostas:
                 with open(args.respostas, encoding="utf-8") as arquivo:
                     respostas = json.load(arquivo)
-            dados = modelos.montar(args.modelo, args.nome, args.imagem, respostas, args.preenchido_por)
+            extracao = {}
+            if args.ficha:
+                with open(args.ficha, encoding="utf-8") as arquivo:
+                    extracao = json.load(arquivo)
+            dados = modelos.montar(args.modelo, args.nome, args.imagem, respostas, args.preenchido_por,
+                                   ficha=extracao.get("pdf"),
+                                   respostas_da_ficha=extracao.get("respostas"),
+                                   evidencias={**{q["id"]: q["evidencia"] for q in extracao.get("perguntas", [])
+                                                  if q.get("evidencia")}, **extracao.get("evidencias", {})},
+                                   padroes_da_ficha={q["id"]: q["padrao"] for q in extracao.get("perguntas", [])})
             _escrever(json.dumps(dados, ensure_ascii=False, indent=2), args.saida)
             return 0
+        if args.comando == "ficha":
+            extracao = fichas.extrair(fichas.ler_paginas(args.pdf))
+            extracao["pdf"] = args.pdf
+            if args.modelo:
+                extracao.update(TRADUTORES[args.modelo](extracao))
+            _escrever(json.dumps(extracao, ensure_ascii=False, indent=2), args.saida)
+            if args.modelo:
+                for pergunta in extracao["perguntas"]:
+                    print(f"pergunta aberta: {pergunta['id']} — {pergunta['pergunta']} (padrão {pergunta['padrao']})")
+            return 0 if extracao.get("formato") else 3
         relatorio = orquestrar.gerar(args.intencao, ano=args.revit)
         print(json.dumps({k: relatorio[k] for k in ("familia", "aprovada", "rfa", "parametros_fixados")},
                          ensure_ascii=False, indent=2))

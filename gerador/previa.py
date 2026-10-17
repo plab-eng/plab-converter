@@ -8,6 +8,7 @@ obrigatória (sempre identificada como prévia gerada, nunca como foto).
 
 import math
 
+import numpy as np
 from PIL import Image, ImageDraw
 
 _LADOS_CILINDRO = 32
@@ -61,18 +62,51 @@ def desenhar(primitivas, caminho, lado=512, legenda=None):
     ox = margem + ((lado - 2 * margem) - (max(xs) - min(xs)) * escala) / 2 - min(xs) * escala
     oy = margem + ((lado - 2 * margem) - (max(ys) - min(ys)) * escala) / 2 - min(ys) * escala
 
-    imagem = Image.new("RGB", (lado, lado), (250, 250, 248))
-    pincel = ImageDraw.Draw(imagem)
-    # Pintor: de trás para a frente (profundidade = x + y - z, maior = mais longe).
-    ordem = sorted(range(len(visiveis)),
-                   key=lambda i: -sum(p[0] + p[1] - p[2] for p in visiveis[i][0]) / len(visiveis[i][0]))
-    for i in ordem:
-        _, normal = visiveis[i]
+    # Z-buffer: a ordem de pintura pela profundidade média escondia a porta da
+    # frente atrás da lateral. Cada face é plana, então a profundidade
+    # (x + y - z, maior = mais longe) é linear na tela: resolve-se a, b, c com
+    # três vértices e compara-se pixel a pixel.
+    profundidade = np.full((lado, lado), np.inf)
+    face_id = np.full((lado, lado), -1, dtype=np.int32)
+    v, u = np.mgrid[0:lado, 0:lado]
+    for i, (pontos, _) in enumerate(visiveis):
+        tela = [(ox + x * escala, oy + y * escala) for x, y in projetados[i]]
+        mascara = Image.new("1", (lado, lado), 0)
+        ImageDraw.Draw(mascara).polygon(tela, fill=1, outline=1)
+        dentro = np.array(mascara, dtype=bool)
+        if not dentro.any():
+            continue
+        amostras = [(tela[k][0], tela[k][1], pontos[k][0] + pontos[k][1] - pontos[k][2]) for k in range(len(tela))]
+        coef = _plano_de_profundidade(amostras)
+        if coef is None:
+            continue
+        z = coef[0] * u + coef[1] * v + coef[2]
+        ganha = dentro & (z < profundidade - 1e-6)
+        profundidade[ganha] = z[ganha]
+        face_id[ganha] = i
+
+    pixels = np.full((lado, lado, 3), (250, 250, 248), dtype=np.uint8)
+    for i, (_, normal) in enumerate(visiveis):
         luz = max(0.25, sum(a * b for a, b in zip(normal, _LUZ)) / math.sqrt(sum(c * c for c in normal)))
-        cor = tuple(int(c * (0.55 + 0.45 * luz)) for c in _COR)
-        poligono = [(ox + x * escala, oy + y * escala) for x, y in projetados[i]]
-        pincel.polygon(poligono, fill=cor, outline=(70, 60, 50))
+        pixels[face_id == i] = tuple(int(c * (0.55 + 0.45 * luz)) for c in _COR)
+    # Aresta onde a face visível muda (inclusive contra o fundo).
+    borda = np.zeros((lado, lado), dtype=bool)
+    borda[:, 1:] |= face_id[:, 1:] != face_id[:, :-1]
+    borda[1:, :] |= face_id[1:, :] != face_id[:-1, :]
+    pixels[borda] = (70, 60, 50)
+
+    imagem = Image.fromarray(pixels, "RGB")
     if legenda:
-        pincel.text((8, lado - 18), legenda, fill=(90, 90, 90))
+        ImageDraw.Draw(imagem).text((8, lado - 18), legenda, fill=(90, 90, 90))
     imagem.save(caminho)
     return caminho
+
+
+def _plano_de_profundidade(amostras):
+    """z = a*u + b*v + c pelos mínimos quadrados dos vértices projetados."""
+    matriz = np.array([[u, v, 1.0] for u, v, _ in amostras])
+    alvo = np.array([z for _, _, z in amostras])
+    if np.linalg.matrix_rank(matriz) < 3:
+        return None  # face vista de lado (degenerada na tela)
+    coef, *_ = np.linalg.lstsq(matriz, alvo, rcond=None)
+    return coef
