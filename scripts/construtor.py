@@ -1144,6 +1144,35 @@ def construir_tipos(doc, especificacao, parametros, ja_criado=None):
     doc.Regenerate()
 
 
+def aplicar_imagem_do_tipo(doc, especificacao):
+    u"""Grava a imagem da intenção como Type Image de TODOS os tipos.
+
+    API provada na sonda S7 da G0 (ImageTypeOptions + ALL_MODEL_TYPE_IMAGE).
+    Vem do gerador; famílias convertidas não trazem este campo (o valor de
+    origem é um ElementId, que não atravessa documentos).
+    """
+    imagem = (especificacao.get(u"imagem_do_tipo") or {}).get(u"arquivo")
+    if not imagem:
+        return
+    if not os.path.isfile(imagem):
+        _pular(u"imagem do tipo", u"arquivo não encontrado: {0}".format(imagem))
+        return
+    try:
+        import Autodesk.Revit.DB as DB
+        opcoes = DB.ImageTypeOptions(imagem, False, DB.ImageTypeSource.Import)
+        tipo_imagem = DB.ImageType.Create(doc, opcoes)
+        gerenciador = doc.FamilyManager
+        parametro = gerenciador.get_Parameter(BuiltInParameter.ALL_MODEL_TYPE_IMAGE)
+        for tipo in list(gerenciador.Types):
+            if not tipo.Name:
+                continue
+            gerenciador.CurrentType = tipo
+            gerenciador.Set(parametro, tipo_imagem.Id)
+        doc.Regenerate()
+    except Exception as erro:
+        _pular(u"imagem do tipo", unicode(erro)[:160])  # noqa: F821
+
+
 def _restaurar_tipo_corrente(doc, nome):
     u"""Deixa o documento salvo na mesma configuração da origem.
 
@@ -1201,6 +1230,7 @@ def principal():
         construir_cotas_radiais(doc, vista, especificacao, formas, parametros)
         construir_combinacoes(doc, especificacao, formas)
         construir_tipos(doc, especificacao, parametros, tipo_corrente)
+        aplicar_imagem_do_tipo(doc, especificacao)
         # Fórmulas por último: exigem um tipo válido já existente.
         aplicar_formulas(doc, especificacao, parametros)
         # Salva na mesma configuração da origem, para o diff de FamilySpec

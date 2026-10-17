@@ -132,6 +132,10 @@ def _medir_tipos(doc, registro):
             except Exception as erro:
                 medidas[nome] = {u"erro": rfaspec.para_unicode(unicode(erro))[:200]}  # noqa: F821
             valores[nome] = _valores_do_tipo(gerenciador, tipo)
+            imagem = gerenciador.get_Parameter(BuiltInParameter.ALL_MODEL_TYPE_IMAGE)
+            valor_imagem = tipo.AsElementId(imagem) if imagem is not None else None
+            valores[nome][u"__imagem_do_tipo"] = (
+                valor_imagem is not None and rfaspec.id_inteiro(valor_imagem) > 0)
     finally:
         transacao.RollBack()
     return medidas, valores
@@ -220,6 +224,12 @@ def principal():
                 divergencias.append({u"parametro": nome, u"problema": u"VALOR",
                                      u"tipo": tipo[u"nome"],
                                      u"detalhe": u"esperado={0!r} obtido={1!r}".format(esperado, obtido)})
+
+    if (especificacao.get(u"imagem_do_tipo") or {}).get(u"arquivo"):
+        for nome, obtidos in sorted(valores.items()):
+            if not obtidos.get(u"__imagem_do_tipo"):
+                divergencias.append({u"parametro": u"Type Image", u"problema": u"IMAGEM_DO_TIPO",
+                                     u"tipo": nome, u"detalhe": u"tipo sem imagem"})
 
     # Subcategoria por forma, na ordem de criação (a mesma da lista do spec).
     for indice, item in enumerate(especificacao.get(u"formas", [])):

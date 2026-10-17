@@ -4,7 +4,7 @@
   "categoria": "Furniture",
   "nome": "PLAB_MOB_Cadeira",
   "entradas": {
-    "imagem": "entradas/cadeira.jpg",
+    "imagem": "entradas/cadeira.png",
     "ficha": null,
     "preenchido_por": "regra"
   },

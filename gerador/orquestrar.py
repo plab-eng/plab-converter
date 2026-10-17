@@ -129,6 +129,13 @@ def _culpados(validacao, intencao):
 
 def gerar(caminho_intencao, ano=2024, pasta=None):
     dados = intencao_mod.carregar(caminho_intencao)
+    # A imagem é obrigatória (decisão de 16/10) e vira o Type Image da família.
+    imagem = dados["entradas"]["imagem"]
+    if not os.path.isabs(imagem):
+        imagem = os.path.join(os.path.dirname(os.path.abspath(caminho_intencao)), imagem)
+    imagem = os.path.normpath(imagem)
+    if not os.path.isfile(imagem):
+        raise EtapaFalhou(f"imagem da intenção não encontrada: {imagem}")
     pasta = pasta or os.path.join(RAIZ, "out", "gerador", dados["nome"], str(ano))
     os.makedirs(pasta, exist_ok=True)
     padroes = {p["nome"]: p["padrao"] for p in dados["parametros"]}
@@ -136,7 +143,7 @@ def gerar(caminho_intencao, ano=2024, pasta=None):
     historico = []
 
     for volta in range(MAX_VOLTAS + 1):
-        spec = compilador.compilar(dados, com_tipos_de_teste=True, fixos=fixos)
+        spec = compilador.compilar(dados, com_tipos_de_teste=True, fixos=fixos, imagem=imagem)
         _, construtor, validacao = construir_e_validar(spec, pasta, f"teste_v{volta}", ano)
         historico.append({"volta": volta, "fixos": dict(fixos), "aprovada": validacao["aprovada"],
                           "nao_reproduzido": construtor.get("nao_reproduzido", [])})
@@ -148,7 +155,7 @@ def gerar(caminho_intencao, ano=2024, pasta=None):
         for nome in sorted(culpados):
             fixos[nome] = padroes[nome]
 
-    final = compilador.compilar(dados, com_tipos_de_teste=False, fixos=fixos)
+    final = compilador.compilar(dados, com_tipos_de_teste=False, fixos=fixos, imagem=imagem)
     rfa, construtor, validacao = construir_e_validar(final, pasta, dados["nome"], ano)
     historico.append({"volta": "final", "fixos": dict(fixos), "aprovada": validacao["aprovada"],
                       "nao_reproduzido": construtor.get("nao_reproduzido", [])})

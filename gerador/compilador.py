@@ -234,7 +234,7 @@ def padrao_caixa(ctx, comp, v0, visivel=None):
         b, h = ex.avaliar(base, valores), ex.avaliar(altura, valores)
         minimo = [c[0] - t[0] / 2, c[1] - t[1] / 2, b]
         maximo = [c[0] + t[0] / 2, c[1] + t[1] / 2, b + h]
-        return minimo, maximo, t[0] * t[1] * h, 0.1
+        return minimo, maximo, t[0] * t[1] * h, 0.1, {"caixa": [minimo, maximo]}
 
     x0, y0, x1, y1 = (*caixa(v0)[0][:2], *caixa(v0)[1][:2])
     perfil = [[_linha([x0, y0, 0.0], [x1, y0, 0.0]), _linha([x1, y0, 0.0], [x1, y1, 0.0]),
@@ -283,7 +283,8 @@ def padrao_cilindro(ctx, comp, v0, visivel=None):
         b, h = ex.avaliar(base, valores), ex.avaliar(altura, valores)
         # A extensão é medida pela malha, que pode não ter vértice no extremo
         # de um eixo (G0: 0,32 mm a menos em r=200).
-        return [-r, -r, b], [r, r, b + h], math.pi * r * r * h, max(0.1, 0.002 * 2 * r)
+        return ([-r, -r, b], [r, r, b + h], math.pi * r * r * h, max(0.1, 0.002 * 2 * r),
+                {"cilindro": [0.0, 0.0, r, b, b + h]})
     ctx.geometrias.append(lambda valores: cilindro(valores) if aparece(valores) else None)
 
 
@@ -364,13 +365,18 @@ def _assinatura(ctx, valores):
         resultado = geometria(valores)
         if resultado is None:
             continue  # cópia oculta neste tipo
-        mn, mx, vol, tol = resultado
+        mn, mx, vol, tol, _ = resultado
         minimo = mn if minimo is None else [min(a, b) for a, b in zip(minimo, mn)]
         maximo = mx if maximo is None else [max(a, b) for a, b in zip(maximo, mx)]
         volume += vol
         tolerancia = max(tolerancia, tol)
     return {"extensao_mm": [b - a for a, b in zip(minimo, maximo)], "minimo_mm": minimo,
             "volume_mm3": volume, "tolerancia_extensao_mm": tolerancia}
+
+
+def _primitivas(ctx, valores):
+    """Sólidos visíveis no tipo, como caixas e cilindros (para a prévia)."""
+    return [resultado[4] for resultado in (g(valores) for g in ctx.geometrias) if resultado is not None]
 
 
 def _viabilidade(ctx, nome, valores):
@@ -391,9 +397,12 @@ def _valor_para_tipo(especie, valor):
 
 # --------------------------------------------------------------------------
 
-def compilar(intencao, com_tipos_de_teste=True, fixos=None):
+def compilar(intencao, com_tipos_de_teste=True, fixos=None, imagem=None):
     """Intenção validada -> FamilySpec (dict). `fixos` = parâmetros desligados
-    da geometria pelo laço de desfazer (spec §6.8), com o valor que assumem."""
+    da geometria pelo laço de desfazer (spec §6.8), com o valor que assumem.
+    `imagem` = caminho absoluto da imagem que vira o Type Image de todos os
+    tipos (a imagem é obrigatória na entrada; quem resolve o caminho é o
+    orquestrador, que conhece a pasta da intenção)."""
     tipos = _tipos_reais(intencao, fixos)
     nome_corrente, v0 = tipos[0]
     ctx = _Contexto(intencao, fixos)
@@ -462,10 +471,12 @@ def compilar(intencao, com_tipos_de_teste=True, fixos=None):
         "combinacoes": [],
         "medicoes": medicoes,
         "lacunas": ctx.lacunas,
+        "imagem_do_tipo": {"arquivo": imagem} if imagem else None,
         "gerador": {
             "modo": intencao["modo"],
             "tipos_de_teste": [n for n, _ in tipos if n.startswith(PREFIXO_TESTE)],
             "fixos": dict(fixos or {}),
             "derivados": [d["nome"] for d in ctx.derivados],
+            "primitivas": _primitivas(ctx, v0),
         },
     }

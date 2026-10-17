@@ -1,0 +1,166 @@
+{
+  "modelo": "mesa_4_pes",
+  "descricao": "Mesa retangular com tampo e 4 pés quadrados",
+  "intencao": {
+    "versao_intencao": "0.1",
+    "modo": "parametrico",
+    "categoria": "Furniture",
+    "parametros": [
+      {
+        "nome": "Largura",
+        "especie": "length",
+        "instancia": false,
+        "padrao": 1200,
+        "faixa": [
+          600,
+          2400
+        ],
+        "origem": "usuario"
+      },
+      {
+        "nome": "Profundidade",
+        "especie": "length",
+        "instancia": false,
+        "padrao": 800,
+        "faixa": [
+          500,
+          1200
+        ],
+        "origem": "usuario"
+      },
+      {
+        "nome": "Altura",
+        "especie": "length",
+        "instancia": false,
+        "padrao": 750,
+        "faixa": [
+          600,
+          1100
+        ],
+        "origem": "regra"
+      },
+      {
+        "nome": "Espessura_Tampo",
+        "especie": "length",
+        "instancia": false,
+        "padrao": 30,
+        "faixa": [
+          15,
+          60
+        ],
+        "origem": "regra"
+      },
+      {
+        "nome": "Lado_Pe",
+        "especie": "length",
+        "instancia": false,
+        "padrao": 50,
+        "faixa": [
+          30,
+          100
+        ],
+        "origem": "regra"
+      },
+      {
+        "nome": "Recuo_Pe",
+        "especie": "length",
+        "instancia": false,
+        "padrao": 40,
+        "faixa": [
+          0,
+          150
+        ],
+        "origem": "regra"
+      }
+    ],
+    "componentes": [
+      {
+        "id": "tampo",
+        "padrao": "caixa",
+        "args": {
+          "largura": "Largura",
+          "profundidade": "Profundidade",
+          "altura": "Espessura_Tampo",
+          "base": "Altura - Espessura_Tampo"
+        },
+        "subcategoria": "Tampo"
+      },
+      {
+        "id": "pe",
+        "padrao": "array_retangular",
+        "subcategoria": "Pes",
+        "args": {
+          "linhas": 2,
+          "colunas": 2,
+          "item": {
+            "padrao": "caixa",
+            "args": {
+              "largura": "Lado_Pe",
+              "profundidade": "Lado_Pe",
+              "altura": "Altura - Espessura_Tampo",
+              "centro_x": "(2 * i - 3) * (Largura / 2 - Recuo_Pe - Lado_Pe / 2)",
+              "centro_y": "(2 * j - 3) * (Profundidade / 2 - Recuo_Pe - Lado_Pe / 2)"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "perguntas": [
+    {
+      "id": "largura",
+      "pergunta": "Largura do tampo (mm)?",
+      "padrao": 1200,
+      "por_que": "medida principal",
+      "alvo": "Largura",
+      "faixa": [
+        600,
+        2400
+      ]
+    },
+    {
+      "id": "profundidade",
+      "pergunta": "Profundidade do tampo (mm)?",
+      "padrao": 800,
+      "por_que": "medida principal",
+      "alvo": "Profundidade",
+      "faixa": [
+        500,
+        1200
+      ]
+    },
+    {
+      "id": "altura",
+      "pergunta": "Altura total (mm)?",
+      "padrao": 750,
+      "por_que": "padrão de mesa de jantar: 750",
+      "alvo": "Altura",
+      "faixa": [
+        600,
+        1100
+      ]
+    },
+    {
+      "id": "pe",
+      "pergunta": "Lado do pé quadrado (mm)?",
+      "padrao": 50,
+      "por_que": "define a robustez",
+      "alvo": "Lado_Pe",
+      "faixa": [
+        30,
+        100
+      ]
+    },
+    {
+      "id": "recuo",
+      "pergunta": "Recuo do pé em relação à borda do tampo (mm)?",
+      "padrao": 40,
+      "por_que": "0 = pé alinhado à borda",
+      "alvo": "Recuo_Pe",
+      "faixa": [
+        0,
+        150
+      ]
+    }
+  ]
+}

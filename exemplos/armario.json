@@ -4,7 +4,7 @@
   "categoria": "Furniture",
   "nome": "PLAB_MOB_Armario",
   "entradas": {
-    "imagem": "entradas/armario.jpg",
+    "imagem": "entradas/armario.png",
     "ficha": null,
     "preenchido_por": "regra"
   },

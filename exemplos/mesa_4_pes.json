@@ -4,7 +4,7 @@
   "categoria": "Furniture",
   "nome": "PLAB_MOB_Mesa_Retangular",
   "entradas": {
-    "imagem": "entradas/mesa.jpg",
+    "imagem": "entradas/mesa_4_pes.png",
     "ficha": null,
     "preenchido_por": "regra"
   },

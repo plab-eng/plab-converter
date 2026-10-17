@@ -1,0 +1,140 @@
+{
+  "modelo": "mesa_redonda",
+  "descricao": "Mesa redonda de coluna central",
+  "intencao": {
+    "versao_intencao": "0.1",
+    "modo": "parametrico",
+    "categoria": "Furniture",
+    "parametros": [
+      {
+        "nome": "Diametro",
+        "especie": "length",
+        "instancia": false,
+        "padrao": 900,
+        "faixa": [
+          600,
+          1400
+        ],
+        "origem": "regra"
+      },
+      {
+        "nome": "Altura",
+        "especie": "length",
+        "instancia": false,
+        "padrao": 750,
+        "faixa": [
+          650,
+          800
+        ],
+        "origem": "regra"
+      },
+      {
+        "nome": "Espessura_Tampo",
+        "especie": "length",
+        "instancia": false,
+        "padrao": 30,
+        "faixa": [
+          20,
+          50
+        ],
+        "origem": "regra"
+      },
+      {
+        "nome": "Diametro_Coluna",
+        "especie": "length",
+        "instancia": false,
+        "padrao": 100,
+        "faixa": [
+          60,
+          200
+        ],
+        "origem": "regra"
+      },
+      {
+        "nome": "Diametro_Base",
+        "especie": "length",
+        "instancia": false,
+        "padrao": 500,
+        "faixa": [
+          350,
+          700
+        ],
+        "origem": "regra"
+      },
+      {
+        "nome": "Espessura_Base",
+        "especie": "length",
+        "instancia": false,
+        "padrao": 20,
+        "faixa": [
+          10,
+          40
+        ],
+        "origem": "regra"
+      }
+    ],
+    "componentes": [
+      {
+        "id": "tampo",
+        "padrao": "cilindro",
+        "args": {
+          "diametro": "Diametro",
+          "altura": "Espessura_Tampo",
+          "base": "Altura - Espessura_Tampo"
+        }
+      },
+      {
+        "id": "coluna",
+        "padrao": "cilindro",
+        "args": {
+          "diametro": "Diametro_Coluna",
+          "altura": "Altura - Espessura_Tampo - Espessura_Base",
+          "base": "Espessura_Base"
+        }
+      },
+      {
+        "id": "base",
+        "padrao": "cilindro",
+        "args": {
+          "diametro": "Diametro_Base",
+          "altura": "Espessura_Base"
+        }
+      }
+    ]
+  },
+  "perguntas": [
+    {
+      "id": "diametro",
+      "pergunta": "Diâmetro do tampo (mm)?",
+      "padrao": 900,
+      "por_que": "medida principal",
+      "alvo": "Diametro",
+      "faixa": [
+        600,
+        1400
+      ]
+    },
+    {
+      "id": "altura",
+      "pergunta": "Altura total (mm)?",
+      "padrao": 750,
+      "por_que": "padrão 750",
+      "alvo": "Altura",
+      "faixa": [
+        650,
+        800
+      ]
+    },
+    {
+      "id": "base",
+      "pergunta": "Diâmetro da base (mm)?",
+      "padrao": 500,
+      "por_que": "estabilidade: ~55% do tampo",
+      "alvo": "Diametro_Base",
+      "faixa": [
+        350,
+        700
+      ]
+    }
+  ]
+}

@@ -4,7 +4,7 @@
   "categoria": "Furniture",
   "nome": "PLAB_MOB_Mesa_Redonda",
   "entradas": {
-    "imagem": "entradas/mesa_redonda.jpg",
+    "imagem": "entradas/mesa_redonda.png",
     "ficha": null,
     "preenchido_por": "regra"
   },

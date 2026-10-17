@@ -4,7 +4,7 @@
   "categoria": "Furniture",
   "nome": "PLAB_MOB_Bancada",
   "entradas": {
-    "imagem": "entradas/bancada.jpg",
+    "imagem": "entradas/bancada.png",
     "ficha": null,
     "preenchido_por": "regra"
   },
