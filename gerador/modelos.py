@@ -51,7 +51,8 @@ def perguntas(nome, imagem=None):
 
 
 def montar(nome, nome_familia, imagem, respostas=None, preenchido_por="usuario",
-           ficha=None, respostas_da_ficha=None, evidencias=None, padroes_da_ficha=None):
+           ficha=None, respostas_da_ficha=None, evidencias=None, padroes_da_ficha=None,
+           tipos_da_ficha=None):
     """Intenção validada a partir do modelo e das respostas ({id: valor}).
 
     `respostas_da_ficha` vêm do extrator por regra (origem "ficha", com a
@@ -99,6 +100,15 @@ def montar(nome, nome_familia, imagem, respostas=None, preenchido_por="usuario",
         if p["id"] in evidencias:
             item["evidencia"] = evidencias[p["id"]]
         registro.append(item)
+    for tipo in tipos_da_ficha or []:
+        for nome, valor in tipo["valores"].items():
+            minimo, maximo = parametros[nome]["faixa"]
+            if not minimo <= valor <= maximo:
+                problemas.append(f"tipo {tipo['nome']}: {nome} = {valor} fora da faixa do modelo [{minimo}, {maximo}]")
+    if tipos_da_ficha:
+        for nome, valor in tipos_da_ficha[0]["valores"].items():
+            parametros[nome]["padrao"] = valor
+            parametros[nome]["origem"] = "ficha"
     if problemas:
         raise RespostaInvalida("respostas recusadas:\n- " + "\n- ".join(problemas))
 
@@ -108,7 +118,8 @@ def montar(nome, nome_familia, imagem, respostas=None, preenchido_por="usuario",
         # A origem de cada valor fica em parametros[].origem e perguntas[].origem.
         "entradas": {"imagem": imagem, "ficha": ficha,
                      "preenchido_por": "ficha" if da_ficha else preenchido_por},
-        "tipos": [{"nome": "Padrao", "valores": {}}],
+        # Ficha com tabela por bitola dá os tipos prontos (um por DN).
+        "tipos": tipos_da_ficha or [{"nome": "Padrao", "valores": {}}],
         "perguntas": registro,
         "lacunas_aceitas": [],
     })

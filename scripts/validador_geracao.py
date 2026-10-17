@@ -86,6 +86,40 @@ def _subcategorias_das_formas(doc):
     return saida
 
 
+def _conectores_medidos(doc):
+    import Autodesk.Revit.DB as DB
+    saida = []
+    for conector in FilteredElementCollector(doc).OfClass(DB.ConnectorElement).ToElements():
+        origem, direcao = conector.Origin, conector.Direction
+        saida.append({
+            u"origem_mm": [rfaspec.interno_para_mm(v) for v in (origem.X, origem.Y, origem.Z)],
+            u"normal": [round(direcao.X, 4), round(direcao.Y, 4), round(direcao.Z, 4)],
+            u"diametro_mm": rfaspec.interno_para_mm(2 * conector.Radius),
+        })
+    return saida
+
+
+def _conferir_conectores(esperados, medidos):
+    u"""Cada conector esperado tem um medido na mesma posição, direção e diâmetro."""
+    if len(esperados) != len(medidos):
+        return u"{0} conectores esperados, {1} medidos".format(len(esperados), len(medidos))
+    for esperado in esperados:
+        achou = False
+        for medido in medidos:
+            if all(abs(a - b) < 1e-3 for a, b in zip(esperado[u"normal"], medido[u"normal"])) and \
+                    all(abs(a - b) < 0.1 for a, b in zip(esperado[u"origem_mm"], medido[u"origem_mm"])):
+                if abs(esperado[u"diametro_mm"] - medido[u"diametro_mm"]) > 0.1:
+                    return u"conector em {0}: diâmetro {1:.1f} (esperado {2:.1f})".format(
+                        [round(v, 1) for v in esperado[u"origem_mm"]], medido[u"diametro_mm"],
+                        esperado[u"diametro_mm"])
+                achou = True
+                break
+        if not achou:
+            return u"conector esperado em {0} (normal {1}) não encontrado".format(
+                [round(v, 1) for v in esperado[u"origem_mm"]], esperado[u"normal"])
+    return None
+
+
 def _medir_por_malha(doc):
     solidos = _solidos_visiveis(doc)
     if not solidos:
@@ -129,6 +163,7 @@ def _medir_tipos(doc, registro):
                 gerenciador.CurrentType = tipo
                 doc.Regenerate()
                 medidas[nome] = _medir_por_malha(doc)
+                medidas[nome][u"conectores"] = _conectores_medidos(doc)
             except Exception as erro:
                 medidas[nome] = {u"erro": rfaspec.para_unicode(unicode(erro))[:200]}  # noqa: F821
             valores[nome] = _valores_do_tipo(gerenciador, tipo)
@@ -169,6 +204,10 @@ def _comparar(esperado, medido):
     desvio = abs(medido[u"volume_mm3"] - volume)
     if desvio > max(abs(volume) * TOLERANCIA_VOLUME_RELATIVA, 1.0):
         return u"VOLUME_DIVERGE", round(100.0 * desvio / volume, 5)
+    if esperado.get(u"conectores"):
+        problema = _conferir_conectores(esperado[u"conectores"], medido.get(u"conectores") or [])
+        if problema:
+            return u"CONECTOR_DIVERGE", problema
     return u"REPRODUZ", None
 
 

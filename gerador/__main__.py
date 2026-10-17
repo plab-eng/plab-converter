@@ -15,7 +15,8 @@ import sys
 from . import compilador, fichas, intencao, modelos, orquestrar, previa
 
 # Modelos com tradução ficha -> respostas (por regra).
-TRADUTORES = {"estante_portas_inferiores": fichas.para_estante_portas_inferiores}
+TRADUTORES = {"estante_portas_inferiores": fichas.para_estante_portas_inferiores,
+              "luva_simples": fichas.para_luva_simples}
 
 
 def _escrever(texto, saida):
@@ -96,7 +97,8 @@ def main(argv=None):
                                    respostas_da_ficha=extracao.get("respostas"),
                                    evidencias={**{q["id"]: q["evidencia"] for q in extracao.get("perguntas", [])
                                                   if q.get("evidencia")}, **extracao.get("evidencias", {})},
-                                   padroes_da_ficha={q["id"]: q["padrao"] for q in extracao.get("perguntas", [])})
+                                   padroes_da_ficha={q["id"]: q["padrao"] for q in extracao.get("perguntas", [])},
+                                   tipos_da_ficha=extracao.get("tipos"))
             _escrever(json.dumps(dados, ensure_ascii=False, indent=2), args.saida)
             return 0
         if args.comando == "ficha":

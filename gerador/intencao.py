@@ -21,7 +21,10 @@ CATEGORIAS = {
     "Specialty Equipment": -2001350,
     "Plumbing Fixtures": -2001160,
     "Mechanical Equipment": -2001140,
+    "Pipe Fittings": -2008049,
 }
+
+FACES_DE_CONECTOR = ("topo", "base")
 
 PADROES = {
     "caixa": {"obrigatorios": ("largura", "profundidade", "altura"),
@@ -41,7 +44,9 @@ ESTATICOS = ("perfil_extrudado", "revolucao")
 INDICES = {"array_linear": ("k",), "array_retangular": ("i", "j")}
 
 _CHAVES_RAIZ = {"versao_intencao", "modo", "categoria", "nome", "perfil", "entradas",
-                "parametros", "componentes", "tipos", "perguntas", "lacunas_aceitas"}
+                "parametros", "componentes", "tipos", "perguntas", "lacunas_aceitas",
+                "tipo_de_peca", "conectores"}
+_CHAVES_CONECTOR = {"componente", "face", "diametro", "sistema", "ligado_a"}
 _CHAVES_PARAMETRO = {"nome", "especie", "instancia", "padrao", "faixa", "origem"}
 _CHAVES_COMPONENTE = {"id", "padrao", "args", "subcategoria", "material"}
 _CHAVES_ENTRADAS = {"imagem", "ficha", "preenchido_por"}
@@ -209,6 +214,26 @@ def validar(dados):
         for chave in tipo.get("valores") or {}:
             if chave not in nomes_param:
                 problemas.append(f"tipos[{indice}] ({nome}): parâmetro {chave!r} não declarado")
+
+    conectores = dados.get("conectores") or []
+    for indice, conector in enumerate(conectores):
+        onde = f"conectores[{indice}]"
+        _sobra(conector, _CHAVES_CONECTOR, onde, problemas)
+        if conector.get("componente") not in ids:
+            problemas.append(f"{onde}: componente {conector.get('componente')!r} não existe")
+        if conector.get("face") not in FACES_DE_CONECTOR:
+            problemas.append(f"{onde}: face fora de {FACES_DE_CONECTOR}")
+        ligado = conector.get("ligado_a")
+        if ligado is not None and not (isinstance(ligado, int) and 0 <= ligado < len(conectores) and ligado != indice):
+            problemas.append(f"{onde}: ligado_a deve ser o índice de outro conector")
+        try:
+            for usado in expressao.nomes(str(conector.get("diametro"))):
+                if usado not in nomes_param:
+                    problemas.append(f"{onde}.diametro: parâmetro {usado!r} não declarado")
+        except expressao.ExpressaoInvalida as erro:
+            problemas.append(f"{onde}.diametro: {erro}")
+    if conectores and dados.get("categoria") != "Pipe Fittings":
+        problemas.append("conectores de tubo pedem a categoria 'Pipe Fittings'")
 
     # O compilador não roda com pergunta aberta (spec §4.3).
     for pergunta in dados.get("perguntas") or []:

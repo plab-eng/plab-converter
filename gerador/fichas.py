@@ -222,3 +222,25 @@ def para_estante_portas_inferiores(extracao):
                                    "a lista não traz quantidade por peça (o desenho mostra 2 acima do balcão)",
                                    f"p.{prateleira['pagina']}: {prateleira['texto']}" if prateleira else None))
     return {"respostas": respostas, "perguntas": perguntas, "evidencias": evidencias}
+
+
+def para_luva_simples(extracao, produto="Luva Simples"):
+    """Tabela da ficha (A comprimento, B diâmetro da bolsa, C e D profundidades
+    das bolsas, E = DN) -> um tipo por DN. Legenda conferida no desenho da p.21
+    da Tigre FTC000021."""
+    alvo = next((p for p in extracao.get("produtos", []) if p["nome"] == produto), None)
+    if alvo is None:
+        return {"respostas": {}, "perguntas": [], "evidencias": {}, "tipos": [],
+                "problema": f"produto {produto!r} não encontrado na ficha"}
+    tipos, evidencias, problemas = [], {}, []
+    for linha in alvo["tabelas"][0]["linhas"]:
+        if "problema" in linha:
+            problemas.append(f"{linha['bitola']}: {linha['problema']}")
+            continue
+        dn = float(linha["bitola"][2:])
+        tipos.append({"nome": linha["bitola"], "valores": {
+            "DN": dn, "Comprimento": linha["A"], "Diametro_Bolsa": linha["B"],
+            "Bolsa_Inferior": linha["C"], "Bolsa_Superior": linha["D"]}})
+        evidencias[linha["bitola"]] = f"p.{linha['pagina']}: {linha['texto']}"
+    return {"respostas": {}, "perguntas": [], "evidencias": evidencias, "tipos": tipos, "problemas": problemas,
+            "codigos": alvo["codigos"]}

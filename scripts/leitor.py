@@ -30,7 +30,9 @@ from Autodesk.Revit.DB import (  # noqa: E402
     FilteredElementCollector, ReferencePlane, Dimension, Extrusion, Revolution,
     Sweep, Blend, SweptBlend, GenericForm, GeomCombination, Line, Arc,
     PlanarFace, BuiltInCategory, BuiltInParameter, StorageType,
+    ConnectorElement, ElementId, Options, PartType, Solid,
 )
+from System import Enum  # noqa: E402
 
 para_mm = rfaspec.interno_para_mm
 log = rfaspec.log
@@ -831,6 +833,79 @@ def principal():
     _relatar(destino, especificacao)
 
 
+def _face_do_conector(doc, conector, indice_por_id):
+    u"""Forma e normal da face plana onde o conector está (pela geometria).
+
+    A API não devolve a referência hospedeira do ConnectorElement; a face é a
+    plana, de normal igual à direção do conector, que contém a origem dele.
+    """
+    origem, direcao = conector.Origin, conector.Direction
+    opcoes = Options()
+    opcoes.ComputeReferences = True
+    for identificador, indice in indice_por_id.items():
+        elemento = doc.GetElement(ElementId(identificador))
+        if elemento is None:
+            continue
+        for objeto in elemento.get_Geometry(opcoes):
+            if not isinstance(objeto, Solid):
+                continue
+            for face in objeto.Faces:
+                if not isinstance(face, PlanarFace) or not face.FaceNormal.IsAlmostEqualTo(direcao):
+                    continue
+                projecao = face.Project(origem)
+                if projecao is not None and projecao.Distance < 1e-6:
+                    return {u"forma": indice, u"normal": _vetor(face.FaceNormal)}
+    return None
+
+
+def ler_conectores(doc, indice_por_id):
+    u"""Conectores de tubo (schema 0.3.0). Outros domínios viram lacuna."""
+    gerenciador = doc.FamilyManager
+    elementos = sorted(FilteredElementCollector(doc).OfClass(ConnectorElement).ToElements(),
+                       key=lambda e: _id_valor(e.Id))
+    posicao = dict((_id_valor(e.Id), i) for i, e in enumerate(elementos))
+    conectores, lacunas = [], []
+    for conector in elementos:
+        dominio = str(conector.Domain)
+        if dominio != "DomainPiping":
+            lacunas.append({u"elemento_id": _id_valor(conector.Id),
+                            u"motivo": u"conector fora da cobertura: {0}".format(dominio)})
+            continue
+        face = _face_do_conector(doc, conector, indice_por_id)
+        if face is None:
+            lacunas.append({u"elemento_id": _id_valor(conector.Id),
+                            u"motivo": u"face hospedeira do conector não encontrada entre as formas lidas"})
+            continue
+        diametro = conector.get_Parameter(BuiltInParameter.CONNECTOR_DIAMETER)
+        associado = gerenciador.GetAssociatedFamilyParameter(diametro) if diametro is not None else None
+        ligado = None
+        try:
+            outro = conector.GetLinkedConnectorElement()
+            if outro is not None:
+                ligado = posicao.get(_id_valor(outro.Id))
+        except Exception:
+            ligado = None
+        conectores.append({
+            u"dominio": u"tubo",
+            u"sistema": rfaspec.para_unicode(str(conector.SystemClassification)),
+            u"face": face,
+            u"diametro_mm": rfaspec.interno_para_mm(2 * conector.Radius),
+            u"diametro_rotulo": associado.Definition.Name if associado is not None else None,
+            u"ligado_a": ligado,
+        })
+    return conectores, lacunas
+
+
+def _tipo_de_peca(doc):
+    parametro = doc.OwnerFamily.get_Parameter(BuiltInParameter.FAMILY_CONTENT_PART_TYPE)
+    if parametro is None:
+        return None
+    try:
+        return rfaspec.para_unicode(str(Enum.ToObject(PartType, parametro.AsInteger())))
+    except Exception:
+        return None
+
+
 def extrair(doc):
     if not doc.IsFamilyDocument:
         raise ValueError(
@@ -844,15 +919,24 @@ def extrair(doc):
     no_esboco = any(endereco.get(u"tipo") == u"esboco"
                     for cota in cotas for endereco in cota[u"referencias"])
     combinacoes, lacunas_de_corte = ler_combinacoes(doc, indice_por_id)
-    lacunas = lacunas_de_forma + lacunas + lacunas_de_corte
+    conectores, lacunas_de_conector = ler_conectores(doc, indice_por_id)
+    lacunas = lacunas_de_forma + lacunas + lacunas_de_corte + lacunas_de_conector
+    identidade = ler_identidade(doc)
+    identidade[u"part_type"] = _tipo_de_peca(doc)
+    if conectores:
+        versao = u"0.3.0"
+    elif no_esboco:
+        versao = u"0.2.0"
+    else:
+        versao = rfaspec.SCHEMA_VERSION
 
     especificacao = {
-        u"versao_schema": u"0.2.0" if no_esboco else rfaspec.SCHEMA_VERSION,
+        u"versao_schema": versao,
         u"origem": {
             u"arquivo": doc.Title,
             u"versao_revit": rfaspec.env("RFADG_ORIGEM_VERSAO", u"desconhecida"),
         },
-        u"identidade": ler_identidade(doc),
+        u"identidade": identidade,
         u"parametros": parametros,
         u"tipos": tipos,
         # Configuração em que TODA a geometria abaixo foi serializada.
@@ -862,6 +946,7 @@ def extrair(doc):
         u"cotas": cotas,
         u"alinhamentos": alinhamentos,
         u"combinacoes": combinacoes,
+        u"conectores": conectores,
         # Assinatura geométrica da origem, tipo a tipo. É contra ISTO que o
         # validador compara no destino — assim ele não precisa saber nada
         # sobre a geometria da família, só se ela reproduz a mesma coisa.

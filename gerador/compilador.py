@@ -57,6 +57,7 @@ class _Contexto:
         self.sinais = []             # (descrição, expressão, sinal esperado)
         self.lacunas = []
         self.usa_radial = False
+        self.faces_de_conector = {}  # componente -> (índice da forma, valores -> {face: centro})
         self.extensao_plano = 2000.0
 
     def expr(self, texto):
@@ -278,6 +279,10 @@ def padrao_cilindro(ctx, comp, v0, visivel=None):
             ctx.cotas.append({"forma": "Radial", "rotulo": raio, "referencias": [
                 {"tipo": "esboco", "forma": indice, "laco": 0, "curva": 0}]})
 
+    ctx.faces_de_conector[comp["id"]] = (indice, lambda valores: {
+        "base": [0.0, 0.0, ex.avaliar(base, valores)],
+        "topo": [0.0, 0.0, ex.avaliar(base, valores) + ex.avaliar(altura, valores)]})
+
     def cilindro(valores):
         r = ex.avaliar(diametro, valores) / 2
         b, h = ex.avaliar(base, valores), ex.avaliar(altura, valores)
@@ -422,6 +427,30 @@ def _expandir(ctx, comp):
 # Tipos e assinatura
 # --------------------------------------------------------------------------
 
+NORMAIS_DE_FACE = {"topo": [0.0, 0.0, 1.0], "base": [0.0, 0.0, -1.0]}
+
+
+def _conectores(ctx, intencao):
+    """Conectores da FamilySpec e o teste: onde cada um deve estar, por tipo."""
+    saida, esperados = [], []
+    for indice, item in enumerate(intencao.get("conectores") or []):
+        if item["componente"] not in ctx.faces_de_conector:
+            raise CompilacaoRecusada([f"conectores[{indice}]: componente {item['componente']!r} não tem "
+                                      "face de conector (por enquanto só cilindro)"])
+        forma, centros = ctx.faces_de_conector[item["componente"]]
+        diametro = ctx.expr(str(item["diametro"]))
+        conector = {"dominio": "tubo", "sistema": item.get("sistema") or "Fitting",
+                    "face": {"forma": forma, "normal": NORMAIS_DE_FACE[item["face"]]},
+                    "ligado_a": item.get("ligado_a"), "diametro_rotulo": None, "diametro_mm": None}
+        if ex.eh_constante(diametro):
+            conector["diametro_mm"] = ex.avaliar(diametro, {})
+        else:
+            conector["diametro_rotulo"] = ctx.parametro(diametro, f"conector{indice}", "diametro")
+        saida.append(conector)
+        esperados.append((item["face"], centros, diametro))
+    return saida, esperados
+
+
 def _valores_base(intencao, fixos):
     valores = {p["nome"]: p["padrao"] for p in intencao["parametros"]}
     valores.update(fixos or {})
@@ -510,6 +539,8 @@ def compilar(intencao, com_tipos_de_teste=True, fixos=None, imagem=None):
         for simples, visivel in _expandir(ctx, comp):
             PADROES[simples["padrao"]](ctx, simples, v0, visivel)
 
+    conectores, conectores_por_tipo = _conectores(ctx, intencao)
+
     if com_tipos_de_teste and intencao["modo"] == "parametrico":
         tipos = tipos + _tipos_de_teste(intencao, fixos)
 
@@ -548,6 +579,11 @@ def compilar(intencao, com_tipos_de_teste=True, fixos=None, imagem=None):
             saida[derivado["nome"]] = derivado["valor"](valores)
         tipos_spec.append({"nome": nome, "valores": saida})
         medicoes[nome] = _assinatura(ctx, valores)
+        if conectores_por_tipo:
+            medicoes[nome]["conectores"] = [
+                {"origem_mm": centros(valores)[face], "normal": NORMAIS_DE_FACE[face],
+                 "diametro_mm": ex.avaliar(diametro, valores)}
+                for face, centros, diametro in conectores_por_tipo]
 
     planos = [{"nome": CENTRO["x"], "canonico": False, "inicio": [0.0, -1.0, 0.0],
                "fim": [0.0, 1.0, 0.0], "normal": NORMAL["x"]},
@@ -555,11 +591,13 @@ def compilar(intencao, com_tipos_de_teste=True, fixos=None, imagem=None):
                "fim": [1.0, 0.0, 0.0], "normal": NORMAL["y"]}] + ctx.planos
 
     return {
-        "versao_schema": "0.2.0" if ctx.usa_radial else "0.1.0",
+        "versao_schema": "0.3.0" if conectores else ("0.2.0" if ctx.usa_radial else "0.1.0"),
         "origem": {"arquivo": intencao["nome"], "versao_revit": None,
                    "gerador": "plab-converter/gerador intencao 0.1"},
         "identidade": {"categoria_id": CATEGORIAS[intencao["categoria"]],
-                       "categoria_nome": intencao["categoria"]},
+                       "categoria_nome": intencao["categoria"],
+                       "part_type": intencao.get("tipo_de_peca")},
+        "conectores": conectores,
         "parametros": parametros,
         "tipo_corrente": nome_corrente,
         "tipos": tipos_spec,

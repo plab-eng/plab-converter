@@ -49,4 +49,10 @@ $env:RFADG_SAIDA = $rfa; $env:RFADG_TEMPLATE = $template.FullName; $env:RFADG_RE
 Etapa "construtor.py" $Destino $rfa
 $env:RFADG_ENTRADA = $rfa; $env:RFADG_RELATORIO_FLEX = $flex
 Etapa "validador.py" $Destino $flex
+# Releitura no destino: o validador do conversor nao confere conectores nem
+# Part Type; o leitor rodado sobre a familia convertida mostra se atravessaram.
+$releitura = Join-Path $Saida "familyspec_destino.json"
+if (Test-Path $releitura) { Remove-Item $releitura -Force }
+$env:RFADG_ENTRADA = $rfa; $env:RFADG_SPEC = $releitura
+Etapa "leitor.py" $Destino $releitura
 Write-Host "Ida e volta: $Saida" -ForegroundColor Green

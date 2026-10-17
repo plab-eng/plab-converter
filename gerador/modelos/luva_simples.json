@@ -1,0 +1,95 @@
+{
+  "modelo": "luva_simples",
+  "descricao": "Luva simples de esgoto (conexão de passagem, 2 conectores)",
+  "intencao": {
+    "versao_intencao": "0.1",
+    "modo": "parametrico",
+    "categoria": "Pipe Fittings",
+    "tipo_de_peca": "Union",
+    "parametros": [
+      {
+        "nome": "DN",
+        "especie": "length",
+        "instancia": false,
+        "padrao": 50,
+        "faixa": [
+          40,
+          200
+        ],
+        "origem": "regra"
+      },
+      {
+        "nome": "Comprimento",
+        "especie": "length",
+        "instancia": false,
+        "padrao": 62.5,
+        "faixa": [
+          30,
+          150
+        ],
+        "origem": "regra"
+      },
+      {
+        "nome": "Diametro_Bolsa",
+        "especie": "length",
+        "instancia": false,
+        "padrao": 65,
+        "faixa": [
+          40,
+          250
+        ],
+        "origem": "regra"
+      },
+      {
+        "nome": "Bolsa_Inferior",
+        "especie": "length",
+        "instancia": false,
+        "padrao": 20.5,
+        "faixa": [
+          10,
+          60
+        ],
+        "origem": "regra"
+      },
+      {
+        "nome": "Bolsa_Superior",
+        "especie": "length",
+        "instancia": false,
+        "padrao": 39,
+        "faixa": [
+          10,
+          80
+        ],
+        "origem": "regra"
+      }
+    ],
+    "componentes": [
+      {
+        "id": "corpo",
+        "padrao": "cilindro",
+        "subcategoria": "Conexao",
+        "args": {
+          "diametro": "Diametro_Bolsa",
+          "altura": "Comprimento"
+        }
+      }
+    ],
+    "conectores": [
+      {
+        "componente": "corpo",
+        "face": "base",
+        "diametro": "DN",
+        "sistema": "Fitting",
+        "ligado_a": 1
+      },
+      {
+        "componente": "corpo",
+        "face": "topo",
+        "diametro": "DN",
+        "sistema": "Fitting",
+        "ligado_a": 0
+      }
+    ]
+  },
+  "perguntas": []
+}

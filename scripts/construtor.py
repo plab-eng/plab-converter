@@ -857,6 +857,69 @@ def construir_cotas_radiais(doc, vista, especificacao, formas, parametros):
     doc.Regenerate()
 
 
+def aplicar_tipo_de_peca(doc, especificacao):
+    u"""Part Type da conexão (Union, Wye, Tee...), resolvido pelo NOME do enum."""
+    nome = (especificacao.get(u"identidade") or {}).get(u"part_type")
+    if not nome:
+        return
+    import Autodesk.Revit.DB as DB
+    valor = getattr(DB.PartType, nome, None)
+    parametro = doc.OwnerFamily.get_Parameter(BuiltInParameter.FAMILY_CONTENT_PART_TYPE)
+    if valor is None or parametro is None:
+        _pular(u"part type '{0}'".format(nome), u"não existe nesta versão ou nesta categoria")
+        return
+    try:
+        parametro.Set(int(valor))
+    except Exception as erro:
+        _pular(u"part type '{0}'".format(nome), unicode(erro)[:140])  # noqa: F821
+
+
+def construir_conectores(doc, especificacao, formas, parametros):
+    u"""Conectores de tubo nas faces planas (schema 0.3.0; sonda S9 da G5).
+
+    Diâmetro: associado ao parâmetro do rótulo, ou fixado no valor do spec.
+    Os pares `ligado_a` são ligados nos dois sentidos (conexão de passagem).
+    """
+    import Autodesk.Revit.DB as DB
+    from Autodesk.Revit.DB.Plumbing import PipeSystemType
+    gerenciador = doc.FamilyManager
+    criados = {}
+    for indice, item in enumerate(especificacao.get(u"conectores") or []):
+        rotulo = u"conector #{0}".format(indice)
+        if item.get(u"dominio") != u"tubo":
+            _pular(rotulo, u"domínio fora da cobertura: {0}".format(item.get(u"dominio")))
+            continue
+        forma = formas.get(item[u"face"][u"forma"])
+        face = _face_por_endereco(forma, item[u"face"]) if forma is not None else None
+        if face is None:
+            _pular(rotulo, u"face hospedeira não reencontrada")
+            continue
+        sistema = getattr(PipeSystemType, item.get(u"sistema") or u"Fitting", None)
+        if sistema is None:
+            _pular(rotulo, u"sistema '{0}' não existe; usado Fitting".format(item.get(u"sistema")))
+            sistema = PipeSystemType.Fitting
+        try:
+            conector = DB.ConnectorElement.CreatePipeConnector(doc, sistema, face.Reference)
+            diametro = conector.get_Parameter(BuiltInParameter.CONNECTOR_DIAMETER)
+            alvo = parametros.get(item.get(u"diametro_rotulo") or u"")
+            if alvo is not None:
+                gerenciador.AssociateElementParameterToFamilyParameter(diametro, alvo)
+            elif item.get(u"diametro_mm"):
+                diametro.Set(mm(item[u"diametro_mm"]))
+            criados[indice] = conector
+        except Exception as erro:
+            _pular(rotulo, unicode(erro)[:160])  # noqa: F821
+    for indice, item in enumerate(especificacao.get(u"conectores") or []):
+        par = item.get(u"ligado_a")
+        if par is None or indice not in criados or par not in criados:
+            continue
+        try:
+            criados[indice].SetLinkedConnectorElement(criados[par])
+        except Exception as erro:
+            _pular(u"ligação do conector #{0}".format(indice), unicode(erro)[:140])  # noqa: F821
+    doc.Regenerate()
+
+
 def construir_combinacoes(doc, especificacao, formas):
     u"""Reaplica os cortes de vazio da origem.
 
@@ -1228,6 +1291,8 @@ def principal():
         # construir_formas). O vazio só nasce com o sólido já resolvido.
         formas = construir_formas(doc, vista, especificacao, planos, parametros)
         construir_cotas_radiais(doc, vista, especificacao, formas, parametros)
+        aplicar_tipo_de_peca(doc, especificacao)
+        construir_conectores(doc, especificacao, formas, parametros)
         construir_combinacoes(doc, especificacao, formas)
         construir_tipos(doc, especificacao, parametros, tipo_corrente)
         aplicar_imagem_do_tipo(doc, especificacao)
