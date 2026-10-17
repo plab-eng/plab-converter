@@ -26,19 +26,19 @@ Mudanças no pipeline do conversor (aditivas):
 
 ## Resultado
 
-| Família | Formas | Tipos validados (reais + teste) | Revit 2022 | Revit 2024 |
-|---|---|---|---|---|
-| `PLAB_MOB_Mesa_Retangular` (tampo + 4 pés fora do centro) | 5 caixas | 2 + 14 | APROVADA | APROVADA |
-| `PLAB_MOB_Bancada` (tampo + 2 laterais, constantes na fórmula) | 3 caixas | 1 + 10 | APROVADA | APROVADA |
-| `PLAB_MOB_Mesa_Redonda` (tampo, coluna e base) | 3 cilindros | 2 + 14 | APROVADA | APROVADA |
+| Família | Formas | Tipos validados (reais + teste) | Revit 2022 | Revit 2024 | Revit 2025 |
+|---|---|---|---|---|---|
+| `PLAB_MOB_Mesa_Retangular` (tampo + 4 pés fora do centro) | 5 caixas | 2 + 14 | APROVADA | APROVADA | APROVADA |
+| `PLAB_MOB_Bancada` (tampo + 2 laterais, constantes na fórmula) | 3 caixas | 1 + 10 | APROVADA | APROVADA | APROVADA |
+| `PLAB_MOB_Mesa_Redonda` (tampo, coluna e base) | 3 cilindros | 2 + 14 | APROVADA | APROVADA | APROVADA |
 
 Em todos: extensão, posição e volume de cada tipo dentro da régua, zero divergência de parâmetro, zero item
 não reproduzido pelo construtor. As 5 lacunas da mesa retangular são subcategorias declaradas e ainda não
 construídas (G2). Nenhum parâmetro precisou ser fixado, então **o laço de desfazer não foi exercitado em
 família real** (só no teste do compilador).
 
-**Regressão do conversor** (`run_fase0.ps1 -RevitOrigem 2024 -RevitDestino 2023`, porque o 2025 não roda
-pelo CLI aqui): APROVADA, 4 tipos `REPRODUZ`, 0 divergências, 1 item não reproduzido (o plano
+**Regressão do conversor** (`run_fase0.ps1 -RevitOrigem 2024 -RevitDestino 2023`, rodada antes de o pyRevit
+ser atualizado e o 2025 voltar a rodar pelo CLI): APROVADA, 4 tipos `REPRODUZ`, 0 divergências, 1 item não reproduzido (o plano
 "Reference Plane" do template, o mesmo de antes). A rodada sobrescreveu os artefatos de `out/` (fora do
 git) com uma fixture criada no 2024.
 
@@ -48,7 +48,8 @@ git) com uma fixture criada no 2024.
    (template métrico). O validador da geração normaliza o sufixo antes de comparar.
 2. **Cadeia de cotas a partir do centro funciona para peça fora do centro**: centro → plano próximo
    (rotulado com o afastamento) → plano distante (rotulado com o tamanho), nessa ordem de criação.
-3. Uma família com 16 tipos sai do zero, validada, em ~75 s no 2024 (duas montagens e duas validações).
+3. O 2025 (pyRevit 6.5.5) aprova as três famílias sem mudança de código.
+4. Uma família com 16 tipos sai do zero, validada, em ~75 s no 2024 (duas montagens e duas validações).
 
 ## Pendências para a G2
 

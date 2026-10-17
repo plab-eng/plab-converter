@@ -3,8 +3,8 @@
 Spec: `docs/SPEC-geracao-familias.md` §10. Script: `scripts/g0_sondas.py`, orquestrado por
 `scripts/run_g0.ps1 -Revit <ano>`. Saída (fora do git): `out/g0/<ano>/resultado.json` e um `.rfa` por sonda.
 
-Rodado na JOSEDESK em **Revit 2022 (22.0.2.392)** e **Revit 2024 (24.3.30.11)**, com resultados idênticos.
-O 2025 não rodou: ver "Ambiente".
+Rodado na JOSEDESK em **Revit 2022 (22.0.2.392)**, **2024 (24.3.30.11)** e **2025 (25.5.0.57)**, com resultados
+idênticos. O 2025 rodou em 17/10, depois da troca do pyRevit para a 6.5.5 (ver "Ambiente").
 
 ## Quadro
 
@@ -37,7 +37,7 @@ O 2025 não rodou: ver "Ambiente".
 
 ## Ambiente
 
-- **Revit 2025 não roda pelo `pyrevit run` nesta máquina.** O motor IronPython .NET 8 do pyRevit 5.3.1
+- **Resolvido em 17/10 com o pyRevit 6.5.5:** o Revit 2025 não rodava pelo `pyrevit run` no 5.3.1. O motor IronPython .NET 8 do pyRevit 5.3.1
   (`bin\netcore\engines\IPY2712PR`) quebra no `import os` de um script de duas linhas
   (`ValueError: Type doesn't have a method with a given name and signature`, em `warnings.py`). Não é
   do código da sonda. A instalação do pyRevit não foi mexida.
