@@ -25,6 +25,10 @@ from Autodesk.Revit.DB import (
 # --------------------------------------------------------------------------
 SCHEMA_VERSION = u"0.1.0"
 
+# O que o construtor aceita. 0.2.0 = 0.1.0 + cota "Radial" na curva do esboço
+# de uma forma (gerador de famílias; o leitor ainda não lê esse campo).
+SCHEMAS_ACEITOS = (u"0.1.0", u"0.2.0")
+
 
 # --------------------------------------------------------------------------
 # Unidades

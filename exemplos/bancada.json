@@ -1,0 +1,97 @@
+{
+  "versao_intencao": "0.1",
+  "modo": "parametrico",
+  "categoria": "Furniture",
+  "nome": "PLAB_MOB_Bancada",
+  "entradas": {
+    "imagem": "entradas/bancada.jpg",
+    "ficha": null,
+    "preenchido_por": "regra"
+  },
+  "parametros": [
+    {
+      "nome": "Largura",
+      "especie": "length",
+      "instancia": false,
+      "padrao": 1800,
+      "faixa": [
+        1000,
+        3000
+      ],
+      "origem": "regra"
+    },
+    {
+      "nome": "Profundidade",
+      "especie": "length",
+      "instancia": false,
+      "padrao": 600,
+      "faixa": [
+        450,
+        800
+      ],
+      "origem": "regra"
+    },
+    {
+      "nome": "Altura",
+      "especie": "length",
+      "instancia": false,
+      "padrao": 900,
+      "faixa": [
+        700,
+        1100
+      ],
+      "origem": "regra"
+    },
+    {
+      "nome": "Espessura_Lateral",
+      "especie": "length",
+      "instancia": false,
+      "padrao": 25,
+      "faixa": [
+        15,
+        50
+      ],
+      "origem": "regra"
+    }
+  ],
+  "componentes": [
+    {
+      "id": "tampo",
+      "padrao": "caixa",
+      "args": {
+        "largura": "Largura",
+        "profundidade": "Profundidade",
+        "altura": "40",
+        "base": "Altura - 40"
+      }
+    },
+    {
+      "id": "lat_esq",
+      "padrao": "caixa",
+      "args": {
+        "largura": "Espessura_Lateral",
+        "profundidade": "Profundidade - 50",
+        "altura": "Altura - 40",
+        "centro_x": "Espessura_Lateral / 2 - Largura / 2"
+      }
+    },
+    {
+      "id": "lat_dir",
+      "padrao": "caixa",
+      "args": {
+        "largura": "Espessura_Lateral",
+        "profundidade": "Profundidade - 50",
+        "altura": "Altura - 40",
+        "centro_x": "Largura / 2 - Espessura_Lateral / 2"
+      }
+    }
+  ],
+  "tipos": [
+    {
+      "nome": "1800",
+      "valores": {}
+    }
+  ],
+  "perguntas": [],
+  "lacunas_aceitas": []
+}

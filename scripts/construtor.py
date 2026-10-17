@@ -712,17 +712,23 @@ def _linha_para_cota(referencias_spec, planos):
     800 mm para fora para não sobrepor a geometria.
     """
     pontos = []
+    normal = None
     for endereco in referencias_spec:
         if endereco[u"tipo"] == u"plano":
             plano = planos.get(endereco[u"nome"])
             if plano is not None:
                 pontos.append(plano.BubbleEnd)
+                normal = normal or plano.Normal
     if len(pontos) < 2:
         return None
 
     afastamento = mm(800.0)
     inicio, fim = pontos[0], pontos[1]
-    if abs(inicio.X - fim.X) > abs(inicio.Y - fim.Y):
+    # A direção sai da NORMAL dos planos (paralelos), não da posição das
+    # pontas de bolha: o plano Center do template tem a bolha onde o template
+    # quis, e comparar pontas de planos de origens diferentes podia escolher a
+    # direção errada (cota entre o Center e um plano gerado pelo gerador).
+    if abs(normal.X) >= abs(normal.Y):
         # Planos afastados em X -> cota horizontal, deslocada em -Y.
         return Line.CreateBound(
             XYZ(inicio.X, -afastamento, 0.0), XYZ(fim.X, -afastamento, 0.0)
@@ -735,6 +741,8 @@ def _linha_para_cota(referencias_spec, planos):
 def construir_cotas(doc, vista, especificacao, planos, parametros):
     u"""Cotas rotuladas: onde o flex é religado (dim.FamilyLabel)."""
     for indice, item in enumerate(especificacao[u"cotas"]):
+        if item.get(u"forma") == u"Radial":
+            continue  # nasce depois da forma (construir_cotas_radiais)
         rotulo = item.get(u"rotulo")
 
         referencias = ReferenceArray()
@@ -766,6 +774,42 @@ def construir_cotas(doc, vista, especificacao, planos, parametros):
             else:
                 _pular(u"rótulo da cota #{0}".format(indice),
                        u"parâmetro '{0}' não existe no destino".format(rotulo))
+
+    doc.Regenerate()
+
+
+def construir_cotas_radiais(doc, vista, especificacao, formas, parametros):
+    u"""Cota radial rotulada na curva do ESBOÇO de uma forma (schema 0.2.0).
+
+    Provado na sonda S2-A2 da G0 (docs/G0-resultado.md): a cota na aresta do
+    sólido dá "Constraints are not satisfied", e a revolução não alinha com
+    plano. A referência que funciona é `Extrusion.Sketch.Profile[laço][curva]`.
+    """
+    for indice, item in enumerate(especificacao[u"cotas"]):
+        if item.get(u"forma") != u"Radial":
+            continue
+        rotulo = item.get(u"rotulo")
+        endereco = item[u"referencias"][0]
+        forma = formas.get(endereco[u"forma"])
+        if forma is None:
+            _pular(u"cota radial #{0} (rótulo={1})".format(indice, rotulo),
+                   u"forma não foi reconstruída")
+            continue
+        try:
+            laco = list(forma.Sketch.Profile)[endereco[u"laco"]]
+            curva = list(laco)[endereco[u"curva"]]
+            centro = curva.Center
+            origem = XYZ(centro.X + curva.Radius * 0.7, centro.Y + curva.Radius * 0.7, 0.0)
+            cota = doc.FamilyCreate.NewRadialDimension(vista, curva.Reference, origem)
+            parametro = parametros.get(rotulo)
+            if parametro is None:
+                _pular(u"rótulo da cota radial #{0}".format(indice),
+                       u"parâmetro '{0}' não existe no destino".format(rotulo))
+                continue
+            cota.FamilyLabel = parametro
+        except Exception as erro:
+            _pular(u"cota radial #{0} (rótulo={1})".format(indice, rotulo),
+                   unicode(erro)[:160])  # noqa: F821
 
     doc.Regenerate()
 
@@ -1084,9 +1128,9 @@ def principal():
 
     especificacao = rfaspec.ler_json(caminho_spec)
 
-    if especificacao[u"versao_schema"] != rfaspec.SCHEMA_VERSION:
-        raise ValueError(u"Schema {0} não suportado (esperado {1}).".format(
-            especificacao[u"versao_schema"], rfaspec.SCHEMA_VERSION))
+    if especificacao[u"versao_schema"] not in rfaspec.SCHEMAS_ACEITOS:
+        raise ValueError(u"Schema {0} não suportado (aceitos: {1}).".format(
+            especificacao[u"versao_schema"], u", ".join(rfaspec.SCHEMAS_ACEITOS)))
 
     app = _obter_app()
     doc = app.NewFamilyDocument(template)
@@ -1111,6 +1155,7 @@ def principal():
         # existir — replay da linha do tempo da fixture (ver
         # construir_formas). O vazio só nasce com o sólido já resolvido.
         formas = construir_formas(doc, vista, especificacao, planos, parametros)
+        construir_cotas_radiais(doc, vista, especificacao, formas, parametros)
         construir_combinacoes(doc, especificacao, formas)
         construir_tipos(doc, especificacao, parametros, tipo_corrente)
         # Fórmulas por último: exigem um tipo válido já existente.

@@ -20,3 +20,6 @@ desktop.ini
 # Lote de famílias reais copiado para inventário
 out/lote/
 out/lote.txt
+
+# pytest
+.pytest_cache/
