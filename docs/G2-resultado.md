@@ -62,8 +62,17 @@ construtor: APROVADA, 4 tipos `REPRODUZ`, 0 divergência, 1 item não reproduzid
 
 ## Pendências
 
-- cilindro fora do centro (o centro do arco não se trava em plano pela API fora do modo de esboço; candidato:
-  `SketchEditScope`, a sondar);
+- cilindro fora do centro nos DOIS eixos (pé redondo no canto): não há caminho pela API. Sonda S8
+  (`scripts/g2_sonda_cilindro.py`, Revit 2024, 17/10):
+  - V1, cota até `ModelArc.CenterPointReference` fora do esboço: "Invalid number of references";
+  - V2, `SketchEditScope`: só existe para documento de projeto ("document is not a project document");
+  - V3, cota do plano Center até a FACE cilíndrica: funciona, mas mede até a tangente do lado de fora
+    (valor |c| + r). Flexiona com o raio variando e com centro negativo (testado em X);
+  - V4, cota até a aresta circular do sólido: "Constraints are not satisfied";
+  - V5/V6, duas cotas (X e Y) na mesma face cilíndrica: o Revit só respeita a primeira; com X primeiro, Y fica
+    parado em silêncio; com Y primeiro, a transação é desfeita.
+  Conclusão: deslocamento num eixo só é possível (V3); nos dois eixos, o candidato é família aninhada
+  (depende da Fase 3 do conversor). Até lá, pé de canto é caixa;
 - materiais por nome (roadmap do conversor, item 4);
 - vazio (rodapé do armário) e combinação de corte no gerador;
 - G3: entradas (formulário, imagem como referência e Type Image, extrator de ficha PDF por regra, IA opcional).
