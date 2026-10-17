@@ -227,15 +227,25 @@ def ler_tipo_corrente(doc):
 # Esqueleto: planos de referência
 # --------------------------------------------------------------------------
 
+# Endereço portável de cada plano (id do elemento -> endereço). Preenchido por
+# ler_planos_de_referencia ANTES das cotas, que endereçam planos por ele.
+_ENDERECO_DO_PLANO = {}
+
+
 def ler_planos_de_referencia(doc):
+    u"""Todos os planos, cada um com um ENDEREÇO único.
+
+    Famílias reais têm dezenas de planos com o nome padrão ("Reference Plane")
+    e planos sem nome: endereçar pelo nome mandava a cota para o plano errado
+    ou para nenhum (82 lacunas na Solaris, 45 no joelho da Ultrapex). O
+    endereço é o nome quando ele é único; senão, RFADG_P<ordem de criação>.
+    """
     planos = []
     coletor = FilteredElementCollector(doc).OfClass(ReferencePlane)
 
     for plano in coletor.ToElements():
         # .Name protegido: em alguns contextos o acesso direto lança.
-        nome = getattr(plano, "Name", None)
-        if not nome:
-            continue
+        nome = getattr(plano, "Name", None) or u""
 
         parametro_referencia = plano.get_Parameter(BuiltInParameter.ELEM_REFERENCE_NAME)
         planos.append({
@@ -256,6 +266,14 @@ def ler_planos_de_referencia(doc):
     # destino, invertendo a âncora: o sólido encolhia pela esquerda em vez de
     # pela direita, e o vazio (parado) deixava de intersectá-lo.
     planos.sort(key=lambda item: item[u"_id"])
+    contagem = {}
+    for item in planos:
+        contagem[item[u"nome"]] = contagem.get(item[u"nome"], 0) + 1
+    _ENDERECO_DO_PLANO.clear()
+    for ordem, item in enumerate(planos):
+        unico = item[u"nome"] and contagem[item[u"nome"]] == 1
+        item[u"endereco"] = item[u"nome"] if unico else u"RFADG_P{0}".format(ordem)
+        _ENDERECO_DO_PLANO[item[u"_id"]] = item[u"endereco"]
     for item in planos:
         del item[u"_id"]
     return planos
@@ -688,10 +706,10 @@ def _endereco_da_referencia(doc, referencia, indice_por_id, curvas_de_esboco=Non
         return None
 
     if isinstance(elemento, ReferencePlane):
-        nome = getattr(elemento, "Name", None)
-        if not nome:
+        endereco = _ENDERECO_DO_PLANO.get(_id_valor(elemento.Id))
+        if not endereco:
             return None
-        return {u"tipo": u"plano", u"nome": nome}
+        return {u"tipo": u"plano", u"nome": endereco}
 
     no_esboco = (curvas_de_esboco or {}).get(_id_valor(elemento.Id))
     if no_esboco is not None:
@@ -913,6 +931,7 @@ def extrair(doc):
         )
 
     parametros, tipos = ler_parametros(doc)
+    planos = ler_planos_de_referencia(doc)  # antes das cotas: define os endereços
     formas, indice_por_id, lacunas_de_forma, curvas_de_esboco = ler_formas(doc)
     cotas, alinhamentos, lacunas = ler_cotas(doc, indice_por_id, curvas_de_esboco)
     # 0.2.0 só quando há cota no esboço: o resto do formato não mudou.
@@ -941,7 +960,7 @@ def extrair(doc):
         u"tipos": tipos,
         # Configuração em que TODA a geometria abaixo foi serializada.
         u"tipo_corrente": ler_tipo_corrente(doc),
-        u"planos_de_referencia": ler_planos_de_referencia(doc),
+        u"planos_de_referencia": planos,
         u"formas": formas,
         u"cotas": cotas,
         u"alinhamentos": alinhamentos,

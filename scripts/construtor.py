@@ -368,34 +368,81 @@ def aplicar_formulas(doc, especificacao, parametros):
 # 2. Planos de referência
 # --------------------------------------------------------------------------
 
-def construir_planos(doc, vista, especificacao):
-    u"""Recria os planos de referência canônicos. Retorna nome -> ReferencePlane.
+def _vista_para_normal(doc, normal, planta):
+    u"""Vista em que um plano de normal `normal` aparece como LINHA.
 
-    Planos do template (Center Front/Back etc.) já existem no destino e são
-    reaproveitados pelo nome. Só os canônicos (RFADG_) são recriados.
+    Plano vertical: a planta. Plano horizontal ou inclinado: a elevação cuja
+    direção de vista é perpendicular à normal. Cota e alinhamento só nascem
+    numa vista dessas (armadilha 9: em 3D falham em silêncio).
+    """
+    if abs(normal.Z) < 1e-6:
+        return planta
+    for vista in FilteredElementCollector(doc).OfClass(View).ToElements():
+        if vista.IsTemplate or vista.ViewType != ViewType.Elevation:
+            continue
+        if abs(vista.ViewDirection.DotProduct(normal)) < 1e-6:
+            return vista
+    return None
+
+
+def _plano_coincidente(candidatos, item):
+    u"""Plano já existente com a mesma normal e passando pelo mesmo ponto."""
+    normal = _vetor(item[u"normal"]).Normalize()
+    ponto = _xyz(item[u"inicio"])
+    for plano in candidatos:
+        if abs(abs(plano.Normal.DotProduct(normal)) - 1.0) > 1e-6:
+            continue
+        if abs((ponto - plano.BubbleEnd).DotProduct(plano.Normal)) < mm(0.01):
+            return plano
+    return None
+
+
+def construir_planos(doc, vista, especificacao):
+    u"""Recria os planos de referência. Retorna endereço -> ReferencePlane.
+
+    - mesmo nome de um plano existente: reaproveita (template no mesmo idioma);
+    - mesma geometria de um plano do TEMPLATE: reaproveita. Família feita em
+      template em português ("Centro (Esquerda/Direita)") convertida num
+      template em inglês achava o plano pelo nome e falhava;
+    - o resto é criado, em qualquer orientação, na vista em que aparece como
+      linha. O nome original é mantido quando é único no documento.
     """
     mapa = {}
-    for plano in FilteredElementCollector(doc).OfClass(ReferencePlane).ToElements():
+    do_template = list(FilteredElementCollector(doc).OfClass(ReferencePlane).ToElements())
+    por_nome = {}
+    for plano in do_template:
         nome = getattr(plano, "Name", None)
         if nome:
-            mapa[nome] = plano
+            por_nome[nome] = plano
+    usados = set(por_nome)
 
     for item in especificacao[u"planos_de_referencia"]:
-        nome = item[u"nome"]
-        if nome in mapa:
+        endereco = item.get(u"endereco") or item[u"nome"]
+        nome = item.get(u"nome") or u""
+        if nome in por_nome:
+            mapa[endereco] = por_nome[nome]
             continue
-        if not item[u"canonico"]:
-            # Plano do template com nome diferente no idioma do destino.
-            # Fase 0 tolera; a geometria da fixture não depende deles.
-            _pular(u"plano '{0}'".format(nome),
-                   u"plano não-canônico ausente no template de destino")
+        coincidente = _plano_coincidente(do_template, item)
+        if coincidente is not None:
+            mapa[endereco] = coincidente
             continue
-
-        plano = doc.FamilyCreate.NewReferencePlane(
-            _xyz(item[u"inicio"]), _xyz(item[u"fim"]), XYZ.BasisZ, vista
-        )
-        plano.Name = nome
-        mapa[nome] = plano
+        normal = _vetor(item[u"normal"]).Normalize()
+        vista_do_plano = _vista_para_normal(doc, normal, vista)
+        if vista_do_plano is None:
+            _pular(u"plano '{0}'".format(endereco), u"sem vista em que o plano apareça como linha")
+            continue
+        inicio, fim = _xyz(item[u"inicio"]), _xyz(item[u"fim"])
+        direcao = (fim - inicio).Normalize()
+        corte = normal.CrossProduct(direcao).Normalize()
+        try:
+            plano = doc.FamilyCreate.NewReferencePlane(inicio, fim, corte, vista_do_plano)
+        except Exception as erro:
+            _pular(u"plano '{0}'".format(endereco), unicode(erro)[:140])  # noqa: F821
+            continue
+        if nome and nome not in usados and endereco == nome:
+            plano.Name = nome
+            usados.add(nome)
+        mapa[endereco] = plano
 
     doc.Regenerate()
     return mapa
@@ -725,6 +772,9 @@ def _linha_para_cota(referencias_spec, planos):
 
     afastamento = mm(800.0)
     inicio, fim = pontos[0], pontos[1]
+    if abs(normal.Z) > 0.9:
+        # Planos horizontais: cota vertical, numa elevação (ver _vista_para_normal).
+        return Line.CreateBound(XYZ(-afastamento, 0.0, inicio.Z), XYZ(-afastamento, 0.0, fim.Z))
     # A direção sai da NORMAL dos planos (paralelos), não da posição das
     # pontas de bolha: o plano Center do template tem a bolha onde o template
     # quis, e comparar pontas de planos de origens diferentes podia escolher a
@@ -766,7 +816,13 @@ def construir_cotas(doc, vista, especificacao, planos, parametros):
                    u"não foi possível derivar a linha de posicionamento")
             continue
 
-        cota = doc.FamilyCreate.NewDimension(vista, linha, referencias)
+        primeiro = planos.get(item[u"referencias"][0].get(u"nome")) if item[u"referencias"] else None
+        vista_da_cota = _vista_para_normal(doc, primeiro.Normal, vista) if primeiro is not None else vista
+        try:
+            cota = doc.FamilyCreate.NewDimension(vista_da_cota or vista, linha, referencias)
+        except Exception as erro:
+            _pular(u"cota #{0} (rótulo={1})".format(indice, rotulo), unicode(erro)[:140])  # noqa: F821
+            continue
 
         if rotulo:
             parametro = parametros.get(rotulo)
@@ -1000,7 +1056,18 @@ def _aplicar_alinhamentos_elegiveis(doc, vista, especificacao, planos, formas, a
                    u"referência não reencontrada no destino")
             continue
 
-        doc.FamilyCreate.NewAlignment(vista, resolvidas[0], resolvidas[1])
+        # Vista em que o datum aparece como linha (plano horizontal: elevação).
+        datum = enderecos[0]
+        if datum[u"tipo"] == u"plano" and planos.get(datum[u"nome"]) is not None:
+            normal_datum = planos[datum[u"nome"]].Normal
+        else:
+            normal_datum = _vetor(datum.get(u"normal") or [1.0, 0.0, 0.0])
+        vista_do_alinhamento = _vista_para_normal(doc, normal_datum, vista) or vista
+        try:
+            doc.FamilyCreate.NewAlignment(vista_do_alinhamento, resolvidas[0], resolvidas[1])
+        except Exception as erro:
+            _pular(u"alinhamento #{0}".format(indice), unicode(erro)[:140])  # noqa: F821
+            continue
         aplicou = True
 
     if aplicou:
