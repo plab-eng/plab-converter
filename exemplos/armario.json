@@ -1,0 +1,179 @@
+{
+  "versao_intencao": "0.1",
+  "modo": "parametrico",
+  "categoria": "Furniture",
+  "nome": "PLAB_MOB_Armario",
+  "entradas": {
+    "imagem": "entradas/armario.jpg",
+    "ficha": null,
+    "preenchido_por": "regra"
+  },
+  "perguntas": [],
+  "lacunas_aceitas": [],
+  "parametros": [
+    {
+      "nome": "Largura",
+      "especie": "length",
+      "instancia": false,
+      "padrao": 900,
+      "faixa": [
+        500,
+        1500
+      ],
+      "origem": "regra"
+    },
+    {
+      "nome": "Profundidade",
+      "especie": "length",
+      "instancia": false,
+      "padrao": 350,
+      "faixa": [
+        250,
+        500
+      ],
+      "origem": "regra"
+    },
+    {
+      "nome": "Altura",
+      "especie": "length",
+      "instancia": false,
+      "padrao": 1800,
+      "faixa": [
+        1000,
+        2400
+      ],
+      "origem": "regra"
+    },
+    {
+      "nome": "Espessura",
+      "especie": "length",
+      "instancia": false,
+      "padrao": 18,
+      "faixa": [
+        15,
+        30
+      ],
+      "origem": "regra"
+    },
+    {
+      "nome": "N_Prateleiras",
+      "especie": "integer",
+      "instancia": false,
+      "padrao": 2,
+      "faixa": [
+        1,
+        4
+      ],
+      "origem": "regra"
+    },
+    {
+      "nome": "Espessura_Porta",
+      "especie": "length",
+      "instancia": false,
+      "padrao": 18,
+      "faixa": [
+        15,
+        25
+      ],
+      "origem": "regra"
+    }
+  ],
+  "componentes": [
+    {
+      "id": "lat_esq",
+      "padrao": "caixa",
+      "subcategoria": "Corpo",
+      "args": {
+        "largura": "Espessura",
+        "profundidade": "Profundidade",
+        "altura": "Altura",
+        "centro_x": "Espessura / 2 - Largura / 2"
+      }
+    },
+    {
+      "id": "lat_dir",
+      "padrao": "caixa",
+      "subcategoria": "Corpo",
+      "args": {
+        "largura": "Espessura",
+        "profundidade": "Profundidade",
+        "altura": "Altura",
+        "centro_x": "Largura / 2 - Espessura / 2"
+      }
+    },
+    {
+      "id": "base",
+      "padrao": "caixa",
+      "subcategoria": "Corpo",
+      "args": {
+        "largura": "Largura - 2 * Espessura",
+        "profundidade": "Profundidade",
+        "altura": "Espessura"
+      }
+    },
+    {
+      "id": "topo",
+      "padrao": "caixa",
+      "subcategoria": "Corpo",
+      "args": {
+        "largura": "Largura - 2 * Espessura",
+        "profundidade": "Profundidade",
+        "altura": "Espessura",
+        "base": "Altura - Espessura"
+      }
+    },
+    {
+      "id": "prateleira",
+      "padrao": "array_linear",
+      "subcategoria": "Prateleiras",
+      "args": {
+        "n": "N_Prateleiras",
+        "n_max": 4,
+        "item": {
+          "padrao": "caixa",
+          "args": {
+            "largura": "Largura - 2 * Espessura",
+            "profundidade": "Profundidade - 20",
+            "altura": "Espessura",
+            "centro_y": "10",
+            "base": "k * Espessura + k * (Altura - 2 * Espessura - N_Prateleiras * Espessura) / (N_Prateleiras + 1)"
+          }
+        }
+      }
+    },
+    {
+      "id": "porta",
+      "padrao": "array_retangular",
+      "subcategoria": "Portas",
+      "args": {
+        "linhas": 2,
+        "colunas": 1,
+        "item": {
+          "padrao": "caixa",
+          "args": {
+            "largura": "Largura / 2 - 3",
+            "profundidade": "Espessura_Porta",
+            "altura": "Altura - 6",
+            "base": "3",
+            "centro_x": "(2 * i - 3) * (Largura / 4)",
+            "centro_y": "0 - Profundidade / 2 - Espessura_Porta / 2"
+          }
+        }
+      }
+    }
+  ],
+  "tipos": [
+    {
+      "nome": "900x1800",
+      "valores": {}
+    },
+    {
+      "nome": "1200x2100",
+      "valores": {
+        "Largura": 1200,
+        "Altura": 2100,
+        "N_Prateleiras": 3
+      }
+    }
+  ]
+}

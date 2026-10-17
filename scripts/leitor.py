@@ -341,6 +341,10 @@ def ler_formas(doc):
     formas = []
     indice_por_id = {}
     lacunas = []
+    # Curvas de esboço endereçáveis (schema 0.2.0): id do elemento de curva ->
+    # (forma, laço, curva). É o que permite ler uma cota radial rotulada no
+    # esboço, o único caminho de raio paramétrico que a G0 provou.
+    curvas_de_esboco = {}
 
     for elemento in todas:
         indice = len(formas)
@@ -394,8 +398,21 @@ def ler_formas(doc):
         })
         formas.append(registro)
         indice_por_id[_id_valor(elemento.Id)] = indice
+        if isinstance(elemento, Extrusion):
+            _mapear_curvas_de_esboco(elemento, indice, curvas_de_esboco)
 
-    return formas, indice_por_id, lacunas
+    return formas, indice_por_id, lacunas, curvas_de_esboco
+
+
+def _mapear_curvas_de_esboco(extrusao, indice, mapa):
+    try:
+        for numero_laco, laco in enumerate(list(extrusao.Sketch.Profile)):
+            for numero_curva, curva in enumerate(list(laco)):
+                referencia = curva.Reference
+                if referencia is not None:
+                    mapa[_id_valor(referencia.ElementId)] = (indice, numero_laco, numero_curva)
+    except Exception:
+        pass  # esboço ilegível já virou lacuna na leitura da forma
 
 
 def _plano_de_esboco(esboco):
@@ -657,7 +674,7 @@ def _ler_revolucao(revolucao):
 # Cotas, rótulos e alinhamentos — o coração do flex
 # --------------------------------------------------------------------------
 
-def _endereco_da_referencia(doc, referencia, indice_por_id):
+def _endereco_da_referencia(doc, referencia, indice_por_id, curvas_de_esboco=None):
     u"""Traduz um Reference do Revit num endereço portável.
 
     Este é o ponto mais delicado do projeto: se o endereço não for reencontrável
@@ -673,6 +690,11 @@ def _endereco_da_referencia(doc, referencia, indice_por_id):
         if not nome:
             return None
         return {u"tipo": u"plano", u"nome": nome}
+
+    no_esboco = (curvas_de_esboco or {}).get(_id_valor(elemento.Id))
+    if no_esboco is not None:
+        return {u"tipo": u"esboco", u"forma": no_esboco[0],
+                u"laco": no_esboco[1], u"curva": no_esboco[2]}
 
     indice_forma = indice_por_id.get(_id_valor(elemento.Id))
     if indice_forma is None:
@@ -728,7 +750,7 @@ def ler_combinacoes(doc, indice_por_id):
     return combinacoes, lacunas
 
 
-def ler_cotas(doc, indice_por_id):
+def ler_cotas(doc, indice_por_id, curvas_de_esboco=None):
     u"""Cotas rotuladas e restrições de alinhamento.
 
     No Revit as duas coisas são elementos `Dimension`; o que as separa é a
@@ -744,7 +766,7 @@ def ler_cotas(doc, indice_por_id):
         enderecos = []
         incompleta = False
         for referencia in dimensao.References:
-            endereco = _endereco_da_referencia(doc, referencia, indice_por_id)
+            endereco = _endereco_da_referencia(doc, referencia, indice_por_id, curvas_de_esboco)
             if endereco is None:
                 incompleta = True
                 break
@@ -755,7 +777,16 @@ def ler_cotas(doc, indice_por_id):
             categoria is not None and _id_valor(categoria.Id) == id_restricoes
         )
 
-        if incompleta or len(enderecos) < 2:
+        forma_da_cota = str(dimensao.DimensionShape)
+        # Raio e diâmetro têm UMA referência (a curva); as lineares, duas ou mais.
+        radial = forma_da_cota in (u"Radial", u"Diameter")
+        minimo = 1 if radial else 2
+        # Endereço de esboço só vale para raio/diâmetro. As cotas lineares
+        # internas do esboço (lados do retângulo, cordas dos arcos), que o
+        # Revit cria sozinho, continuam lacuna como antes do schema 0.2.0:
+        # o construtor não as recria e só gerariam ruído no relatório.
+        no_esboco = any(e.get(u"tipo") == u"esboco" for e in enderecos)
+        if incompleta or len(enderecos) < minimo or (no_esboco and not radial):
             lacunas.append({
                 u"elemento_id": _id_valor(dimensao.Id),
                 u"eh_restricao": eh_restricao,
@@ -768,11 +799,17 @@ def ler_cotas(doc, indice_por_id):
             alinhamentos.append({u"referencias": enderecos})
             continue
 
-        rotulo = dimensao.FamilyLabel
+        # Algumas cotas recusam até a LEITURA do rótulo ("This dimension can
+        # not be labeled", visto em família gerada pelo gerador, 17/10). Para
+        # o leitor isso é só "sem rótulo"; não pode derrubar a família inteira.
+        try:
+            rotulo = dimensao.FamilyLabel
+        except Exception:
+            rotulo = None
         cotas.append({
             u"referencias": enderecos,
             u"rotulo": rotulo.Definition.Name if rotulo is not None else None,
-            u"forma": str(dimensao.DimensionShape),
+            u"forma": forma_da_cota,
         })
 
     return cotas, alinhamentos, lacunas
@@ -801,13 +838,16 @@ def extrair(doc):
         )
 
     parametros, tipos = ler_parametros(doc)
-    formas, indice_por_id, lacunas_de_forma = ler_formas(doc)
-    cotas, alinhamentos, lacunas = ler_cotas(doc, indice_por_id)
+    formas, indice_por_id, lacunas_de_forma, curvas_de_esboco = ler_formas(doc)
+    cotas, alinhamentos, lacunas = ler_cotas(doc, indice_por_id, curvas_de_esboco)
+    # 0.2.0 só quando há cota no esboço: o resto do formato não mudou.
+    no_esboco = any(endereco.get(u"tipo") == u"esboco"
+                    for cota in cotas for endereco in cota[u"referencias"])
     combinacoes, lacunas_de_corte = ler_combinacoes(doc, indice_por_id)
     lacunas = lacunas_de_forma + lacunas + lacunas_de_corte
 
     especificacao = {
-        u"versao_schema": rfaspec.SCHEMA_VERSION,
+        u"versao_schema": u"0.2.0" if no_esboco else rfaspec.SCHEMA_VERSION,
         u"origem": {
             u"arquivo": doc.Title,
             u"versao_revit": rfaspec.env("RFADG_ORIGEM_VERSAO", u"desconhecida"),

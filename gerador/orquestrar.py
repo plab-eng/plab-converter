@@ -11,6 +11,7 @@ toda saída é apagada antes de cada etapa e precisa reaparecer depois.
 import glob
 import json
 import os
+import shutil
 import subprocess
 
 from . import compilador, intencao as intencao_mod
@@ -46,12 +47,29 @@ def _gravar_spec(caminho, spec):
         json.dump(spec, arquivo, ensure_ascii=True, indent=1, sort_keys=True)
 
 
+def resolver_pyrevit():
+    """CLI do pyRevit a usar. RFADG_PYREVIT manda; senão, a instalação 6.5.5.
+
+    Não confiar no PATH: um terminal aberto antes da atualização de 17/10 ainda
+    herda o PATH antigo, que acha primeiro o pyrevit.exe 5.3.1, e esse não
+    reconhece a versão da portadora quando o clone é 6.5.5.
+    """
+    candidatos = [os.environ.get("RFADG_PYREVIT"),
+                  r"C:\Program Files\pyRevit CLI\bin\pyrevit.exe",
+                  r"C:\Program Files\pyRevit-Master\bin\pyrevit.exe",
+                  shutil.which("pyrevit")]
+    for candidato in candidatos:
+        if candidato and os.path.isfile(candidato):
+            return candidato
+    raise EtapaFalhou("CLI do pyRevit não encontrada (defina RFADG_PYREVIT)")
+
+
 def _pyrevit(script, ano, ambiente, log):
     portadora = os.path.join(RAIZ, "out", "portadora.rfa")
     env = dict(os.environ)
     env.update({"RFADG_ROOT": RAIZ, **ambiente})
     processo = subprocess.run(
-        ["pyrevit", "run", os.path.join(RAIZ, "scripts", script), portadora, f"--revit={ano}"],
+        [resolver_pyrevit(), "run", os.path.join(RAIZ, "scripts", script), portadora, f"--revit={ano}"],
         env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
     with open(log, "w", encoding="utf-8") as arquivo:
         arquivo.write(processo.stdout + processo.stderr)

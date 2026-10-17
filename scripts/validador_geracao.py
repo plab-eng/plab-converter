@@ -27,7 +27,8 @@ sys.path.insert(0, os.path.join(_RAIZ, "pylib"))
 import rfaspec  # noqa: E402
 
 from Autodesk.Revit.DB import (  # noqa: E402
-    FailureProcessingResult, FailureSeverity, IFailuresPreprocessor,
+    BuiltInParameter, FailureProcessingResult, FailureSeverity,
+    FilteredElementCollector, GenericForm, IFailuresPreprocessor,
     StorageType, Transaction,
 )
 
@@ -55,8 +56,38 @@ class _Preprocessador(IFailuresPreprocessor):
         return FailureProcessingResult.Continue
 
 
+def _solidos_visiveis(doc):
+    u"""Sólidos das formas VISÍVEIS no tipo corrente.
+
+    As cópias de um array do gerador ficam ocultas por fórmula ("N > k-1"),
+    mas a geometria delas continua existindo no documento da família. Medir
+    tudo, como o validador do conversor faz, somaria prateleiras que o usuário
+    não vê. O gerador ainda não emite vazio, então não há GeomCombination aqui.
+    """
+    solidos = []
+    for elemento in FilteredElementCollector(doc).OfClass(GenericForm).ToElements():
+        if not elemento.IsSolid:
+            continue
+        visivel = elemento.get_Parameter(BuiltInParameter.IS_VISIBLE_PARAM)
+        if visivel is not None and visivel.AsInteger() == 0:
+            continue
+        encontrados, _ = rfaspec._solidos_da_forma(elemento)
+        solidos.extend(encontrados)
+    return solidos
+
+
+def _subcategorias_das_formas(doc):
+    formas = sorted(FilteredElementCollector(doc).OfClass(GenericForm).ToElements(),
+                    key=lambda elemento: rfaspec.id_inteiro(elemento.Id))
+    saida = []
+    for forma in formas:
+        subcategoria = forma.Subcategory
+        saida.append(rfaspec.para_unicode(subcategoria.Name) if subcategoria is not None else None)
+    return saida
+
+
 def _medir_por_malha(doc):
-    solidos, _ = rfaspec._coletar_solidos(doc)
+    solidos = _solidos_visiveis(doc)
     if not solidos:
         return {u"vazio": True}
     volume = 0.0
@@ -154,6 +185,7 @@ def principal():
 
     doc = __revit__.Application.OpenDocumentFile(entrada)  # noqa: F821
     try:
+        subcategorias = _subcategorias_das_formas(doc)
         formulas = {}
         for parametro in doc.FamilyManager.Parameters:
             formulas[rfaspec.para_unicode(parametro.Definition.Name)] = parametro.Formula
@@ -188,6 +220,14 @@ def principal():
                 divergencias.append({u"parametro": nome, u"problema": u"VALOR",
                                      u"tipo": tipo[u"nome"],
                                      u"detalhe": u"esperado={0!r} obtido={1!r}".format(esperado, obtido)})
+
+    # Subcategoria por forma, na ordem de criação (a mesma da lista do spec).
+    for indice, item in enumerate(especificacao.get(u"formas", [])):
+        esperada = item.get(u"subcategoria")
+        obtida = subcategorias[indice] if indice < len(subcategorias) else u"(forma ausente)"
+        if esperada and esperada != obtida:
+            divergencias.append({u"parametro": u"forma #{0}".format(indice), u"problema": u"SUBCATEGORIA",
+                                 u"detalhe": u"esperada={0!r} obtida={1!r}".format(esperada, obtida)})
 
     aprovada = bool(tipos) and all(t[u"veredito"] == u"REPRODUZ" for t in tipos) and not divergencias
     rfaspec.gravar_json(caminho_relatorio, {

@@ -89,52 +89,23 @@
       "subcategoria": "Tampo"
     },
     {
-      "id": "pe1",
-      "padrao": "caixa",
+      "id": "pe",
+      "padrao": "array_retangular",
+      "subcategoria": "Pes",
       "args": {
-        "largura": "Lado_Pe",
-        "profundidade": "Lado_Pe",
-        "altura": "Altura - Espessura_Tampo",
-        "centro_x": "Lado_Pe / 2 + Recuo_Pe - Largura / 2",
-        "centro_y": "Lado_Pe / 2 + Recuo_Pe - Profundidade / 2"
-      },
-      "subcategoria": "Pes"
-    },
-    {
-      "id": "pe2",
-      "padrao": "caixa",
-      "args": {
-        "largura": "Lado_Pe",
-        "profundidade": "Lado_Pe",
-        "altura": "Altura - Espessura_Tampo",
-        "centro_x": "Largura / 2 - Recuo_Pe - Lado_Pe / 2",
-        "centro_y": "Lado_Pe / 2 + Recuo_Pe - Profundidade / 2"
-      },
-      "subcategoria": "Pes"
-    },
-    {
-      "id": "pe3",
-      "padrao": "caixa",
-      "args": {
-        "largura": "Lado_Pe",
-        "profundidade": "Lado_Pe",
-        "altura": "Altura - Espessura_Tampo",
-        "centro_x": "Largura / 2 - Recuo_Pe - Lado_Pe / 2",
-        "centro_y": "Profundidade / 2 - Recuo_Pe - Lado_Pe / 2"
-      },
-      "subcategoria": "Pes"
-    },
-    {
-      "id": "pe4",
-      "padrao": "caixa",
-      "args": {
-        "largura": "Lado_Pe",
-        "profundidade": "Lado_Pe",
-        "altura": "Altura - Espessura_Tampo",
-        "centro_x": "Lado_Pe / 2 + Recuo_Pe - Largura / 2",
-        "centro_y": "Profundidade / 2 - Recuo_Pe - Lado_Pe / 2"
-      },
-      "subcategoria": "Pes"
+        "linhas": 2,
+        "colunas": 2,
+        "item": {
+          "padrao": "caixa",
+          "args": {
+            "largura": "Lado_Pe",
+            "profundidade": "Lado_Pe",
+            "altura": "Altura - Espessura_Tampo",
+            "centro_x": "(2 * i - 3) * (Largura / 2 - Recuo_Pe - Lado_Pe / 2)",
+            "centro_y": "(2 * j - 3) * (Profundidade / 2 - Recuo_Pe - Lado_Pe / 2)"
+          }
+        }
+      }
     }
   ],
   "tipos": [

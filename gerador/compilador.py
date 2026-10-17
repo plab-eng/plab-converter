@@ -47,7 +47,7 @@ class _Contexto:
         self.intencao = intencao
         self.fixos = dict(fixos or {})
         self.usuario = {p["nome"]: p for p in intencao["parametros"]}
-        self.derivados = []          # [(nome, formula)] na ordem de criação
+        self.derivados = []          # dicts nome/formula/especie/valor, na ordem de criação
         self.planos = []
         self.cotas = []
         self.formas = []
@@ -63,19 +63,30 @@ class _Contexto:
         texto = str(texto)
         return ex.substituir(texto, self.fixos) if self.fixos else texto
 
-    def parametro(self, texto, componente, campo):
+    def _derivado(self, nome, formula, especie, valor):
+        self.derivados.append({"nome": nome, "formula": formula, "especie": especie, "valor": valor})
+        return nome
+
+    def parametro(self, texto, componente, campo, forcar=False):
         """Nome do parâmetro que carrega `texto`, criando um derivado se preciso.
 
-        Devolve None quando a expressão é constante: não há o que rotular.
+        Devolve None quando a expressão é constante e `forcar` é falso: não há
+        o que rotular. Com `forcar`, a constante vira parâmetro de fórmula: é o
+        jeito de TRAVAR uma cota de tamanho fixo (um plano sem cota rotulada
+        fica solto e a face alinhada a ele não acompanha o resto).
         """
         texto = self.expr(texto)
-        if ex.eh_constante(texto):
+        if ex.eh_constante(texto) and not forcar:
             return None
         if ex.eh_nome(texto) and texto in self.usuario:
             return texto.strip()
         nome = f"GER_{componente}_{campo}"
-        self.derivados.append((nome, texto))
-        return nome
+        return self._derivado(nome, texto, "length", lambda valores, t=texto: ex.avaliar(t, valores))
+
+    def visibilidade(self, n, k, nome):
+        """Sim/não "cópia k aparece": fórmula `n > k-1` (o Revit não aceita >=)."""
+        return self._derivado(nome, f"{n} > {k - 1}", "yesno",
+                              lambda valores: 1 if ex.avaliar(n, valores) > k - 1 else 0)
 
     def plano(self, eixo, nome, coordenada):
         e = self.extensao_plano
@@ -111,12 +122,29 @@ def _eixo_da_caixa(ctx, comp, eixo, tamanho, centro, v0):
 
     if ex.eh_constante(centro) and abs(c0) < 1e-9:
         # Centrada: meia medida por fórmula rotulando as duas cotas (sonda S1).
-        meia = ctx.parametro(f"({tamanho}) / 2", comp, f"meia_{eixo}")
+        meia = ctx.parametro(f"({tamanho}) / 2", comp, f"meia_{eixo}", forcar=True)
         menor = ctx.plano(eixo, f"RFADG_{comp}_{menor_lado}", c0 - t0 / 2)
         maior = ctx.plano(eixo, f"RFADG_{comp}_{maior_lado}", c0 + t0 / 2)
         if meia:
             _cota(ctx, CENTRO[eixo], menor, meia)
             _cota(ctx, CENTRO[eixo], maior, meia)
+        return menor, maior
+
+    if abs(c0) < t0 / 2:
+        # Cruza o centro sem estar centrada: cada lado tem a sua cota a partir
+        # do plano Center (t/2 - c e t/2 + c). A viabilidade garante que os
+        # dois lados continuam positivos em todos os tipos, isto é, que a peça
+        # não deixa de cruzar o centro.
+        lado_menor = f"({tamanho}) / 2 - ({centro})"
+        lado_maior = f"({tamanho}) / 2 + ({centro})"
+        ctx.positivos.append((f"{comp}: lado {menor_lado} a partir do centro", lado_menor))
+        ctx.positivos.append((f"{comp}: lado {maior_lado} a partir do centro", lado_maior))
+        rotulo_menor = ctx.parametro(lado_menor, comp, f"lado_{menor_lado}", forcar=True)
+        rotulo_maior = ctx.parametro(lado_maior, comp, f"lado_{maior_lado}", forcar=True)
+        menor = ctx.plano(eixo, f"RFADG_{comp}_{menor_lado}", c0 - t0 / 2)
+        maior = ctx.plano(eixo, f"RFADG_{comp}_{maior_lado}", c0 + t0 / 2)
+        _cota(ctx, CENTRO[eixo], menor, rotulo_menor)
+        _cota(ctx, CENTRO[eixo], maior, rotulo_maior)
         return menor, maior
 
     # Fora do centro: cadeia centro -> plano próximo -> plano distante, nessa
@@ -125,8 +153,8 @@ def _eixo_da_caixa(ctx, comp, eixo, tamanho, centro, v0):
     proximo_expr = f"({centro}) - ({tamanho}) / 2" if sinal > 0 else f"0 - ({centro}) - ({tamanho}) / 2"
     ctx.sinais.append((f"{comp}: centro em {eixo}", centro, sinal))
     ctx.positivos.append((f"{comp}: afastamento do centro em {eixo}", proximo_expr))
-    afastamento = ctx.parametro(proximo_expr, comp, f"afast_{eixo}")
-    rotulo_tamanho = ctx.parametro(tamanho, comp, f"tam_{eixo}")
+    afastamento = ctx.parametro(proximo_expr, comp, f"afast_{eixo}", forcar=True)
+    rotulo_tamanho = ctx.parametro(tamanho, comp, f"tam_{eixo}", forcar=True)
     a0 = ex.avaliar(proximo_expr, v0)
     lado_proximo, lado_distante = (menor_lado, maior_lado) if sinal > 0 else (maior_lado, menor_lado)
     proximo = ctx.plano(eixo, f"RFADG_{comp}_{lado_proximo}", sinal * a0)
@@ -163,10 +191,10 @@ def _extrusao(ctx, perfil, inicio, fim, associacoes, comp):
         "associacoes": associacoes, "subcategoria": comp.get("subcategoria"),
         "visivel": True, "componente": comp["id"],
     })
-    for chave in ("subcategoria", "material"):
-        if comp.get(chave):
-            ctx.lacunas.append({"componente": comp["id"], "motivo":
-                                f"{chave} {comp[chave]!r} ainda não é construída (G2)"})
+    if comp.get("material"):
+        ctx.lacunas.append({"componente": comp["id"], "motivo":
+                            f"material {comp['material']!r} ainda não é construído "
+                            "(materiais por nome, roadmap do conversor)"})
     return indice
 
 
@@ -174,7 +202,18 @@ def _linha(a, b):
     return {"tipo": "linha", "inicio": a, "fim": b}
 
 
-def padrao_caixa(ctx, comp, v0):
+def _ligar_visibilidade(ctx, comp, associacoes, visivel):
+    """Associa o Visible da forma ao sim/não da cópia. Devolve o teste por tipo."""
+    if not visivel:
+        return lambda valores: True
+    n, k = visivel
+    if ctx.intencao["modo"] == "parametrico":
+        nome = ctx.visibilidade(n, k, f"GER_{comp['id']}_vis")
+        associacoes["Visible"] = {"builtin": "IS_VISIBLE_PARAM", "parametro_de_familia": nome}
+    return lambda valores: ex.avaliar(n, valores) > k - 1
+
+
+def padrao_caixa(ctx, comp, v0, visivel=None):
     args = comp["args"]
     largura, profundidade = args["largura"], args["profundidade"]
     cx, cy = args.get("centro_x", "0"), args.get("centro_y", "0")
@@ -187,6 +226,7 @@ def padrao_caixa(ctx, comp, v0):
                                                      args["altura"], v0)
     if not parametrico:
         associacoes = {}
+    aparece = _ligar_visibilidade(ctx, comp, associacoes, visivel)
 
     def caixa(valores):
         c = [ex.avaliar(ctx.expr(cx), valores), ex.avaliar(ctx.expr(cy), valores)]
@@ -200,7 +240,7 @@ def padrao_caixa(ctx, comp, v0):
     perfil = [[_linha([x0, y0, 0.0], [x1, y0, 0.0]), _linha([x1, y0, 0.0], [x1, y1, 0.0]),
                _linha([x1, y1, 0.0], [x0, y1, 0.0]), _linha([x0, y1, 0.0], [x0, y0, 0.0])]]
     indice = _extrusao(ctx, perfil, inicio, fim, associacoes, comp)
-    ctx.geometrias.append(caixa)
+    ctx.geometrias.append(lambda valores: caixa(valores) if aparece(valores) else None)
 
     if parametrico:
         meio_z = (inicio + fim) / 2
@@ -214,7 +254,7 @@ def padrao_caixa(ctx, comp, v0):
                 {"tipo": "face", "forma": indice, "normal": normal, "origem": origem}]})
 
 
-def padrao_cilindro(ctx, comp, v0):
+def padrao_cilindro(ctx, comp, v0, visivel=None):
     """Cilindro em z, centrado na origem; raio pela cota radial no esboço (S2-A2)."""
     args = comp["args"]
     diametro = ctx.expr(args["diametro"])
@@ -224,6 +264,7 @@ def padrao_cilindro(ctx, comp, v0):
     parametrico = ctx.intencao["modo"] == "parametrico"
     if not parametrico:
         associacoes = {}
+    aparece = _ligar_visibilidade(ctx, comp, associacoes, visivel)
     r0 = ex.avaliar(diametro, v0) / 2
     perfil = [[
         {"tipo": "arco", "inicio": [r0, 0.0, 0.0], "fim": [-r0, 0.0, 0.0], "meio": [0.0, r0, 0.0]},
@@ -243,10 +284,38 @@ def padrao_cilindro(ctx, comp, v0):
         # A extensão é medida pela malha, que pode não ter vértice no extremo
         # de um eixo (G0: 0,32 mm a menos em r=200).
         return [-r, -r, b], [r, r, b + h], math.pi * r * r * h, max(0.1, 0.002 * 2 * r)
-    ctx.geometrias.append(cilindro)
+    ctx.geometrias.append(lambda valores: cilindro(valores) if aparece(valores) else None)
 
 
 PADROES = {"caixa": padrao_caixa, "cilindro": padrao_cilindro}
+
+
+def _expandir(ctx, comp):
+    """Componente -> [(componente simples, visibilidade)]. Array vira cópias.
+
+    Cada cópia é uma forma comum, com planos, cotas e alinhamentos próprios,
+    então ela flexiona como qualquer caixa. A contagem paramétrica liga e
+    desliga cópias pela visibilidade (sonda S3-B), até `n_max`.
+    """
+    padrao = comp["padrao"]
+    if padrao in PADROES:
+        return [(comp, None)]
+    args = comp["args"]
+    item = args["item"]
+
+    def copia(sufixo, indices):
+        return {"id": f"{comp['id']}_{sufixo}", "padrao": item["padrao"],
+                "args": {chave: ex.substituir(str(valor), indices) for chave, valor in item["args"].items()},
+                "subcategoria": comp.get("subcategoria"), "material": comp.get("material")}
+
+    if padrao == "array_retangular":
+        return [(copia(f"{i}_{j}", {"i": i, "j": j}), None)
+                for i in range(1, args["linhas"] + 1) for j in range(1, args["colunas"] + 1)]
+
+    n = ctx.expr(str(args["n"]))
+    if ex.eh_constante(n):
+        return [(copia(str(k), {"k": k}), None) for k in range(1, int(round(ex.avaliar(n, {}))) + 1)]
+    return [(copia(str(k), {"k": k}), (n, k)) for k in range(1, args["n_max"] + 1)]
 
 
 # --------------------------------------------------------------------------
@@ -292,7 +361,10 @@ def _tipos_de_teste(intencao, fixos):
 def _assinatura(ctx, valores):
     minimo, maximo, volume, tolerancia = None, None, 0.0, 0.1
     for geometria in ctx.geometrias:
-        mn, mx, vol, tol = geometria(valores)
+        resultado = geometria(valores)
+        if resultado is None:
+            continue  # cópia oculta neste tipo
+        mn, mx, vol, tol = resultado
         minimo = mn if minimo is None else [min(a, b) for a, b in zip(minimo, mn)]
         maximo = mx if maximo is None else [max(a, b) for a, b in zip(maximo, mx)]
         volume += vol
@@ -302,14 +374,14 @@ def _assinatura(ctx, valores):
 
 
 def _viabilidade(ctx, nome, valores):
+    """Lista de (tipo, causa). A causa não leva o valor, para agrupar entre tipos."""
     problemas = []
     for descricao, texto in ctx.positivos:
-        valor = ex.avaliar(texto, valores)
-        if valor < COTA_MINIMA_MM:
-            problemas.append(f"tipo {nome}: {descricao} = {valor:.2f} mm (precisa ser >= {COTA_MINIMA_MM})")
+        if ex.avaliar(texto, valores) < COTA_MINIMA_MM:
+            problemas.append((nome, f"{descricao} fica abaixo de {COTA_MINIMA_MM} mm"))
     for descricao, texto, sinal in ctx.sinais:
         if ex.avaliar(texto, valores) * sinal <= 0:
-            problemas.append(f"tipo {nome}: {descricao} troca de lado (o padrão não cruza o centro)")
+            problemas.append((nome, f"{descricao} troca de lado (passaria pelo centro)"))
     return problemas
 
 
@@ -327,16 +399,22 @@ def compilar(intencao, com_tipos_de_teste=True, fixos=None):
     ctx = _Contexto(intencao, fixos)
 
     for comp in intencao["componentes"]:
-        PADROES[comp["padrao"]](ctx, comp, v0)
+        for simples, visivel in _expandir(ctx, comp):
+            PADROES[simples["padrao"]](ctx, simples, v0, visivel)
 
     if com_tipos_de_teste and intencao["modo"] == "parametrico":
         tipos = tipos + _tipos_de_teste(intencao, fixos)
 
-    problemas = []
+    por_causa = {}
     for nome, valores in tipos:
-        problemas += _viabilidade(ctx, nome, valores)
-    if problemas:
-        raise CompilacaoRecusada(problemas)
+        for tipo_nome, causa in _viabilidade(ctx, nome, valores):
+            por_causa.setdefault(causa, []).append(tipo_nome)
+    if por_causa:
+        # Uma linha por causa, com os tipos em que ela aparece: a mesma causa
+        # repetida em 16 tipos e 5 cópias esconde as outras.
+        raise CompilacaoRecusada([
+            f"{causa} — em {len(nomes)} tipo(s): {', '.join(nomes[:4])}{' ...' if len(nomes) > 4 else ''}"
+            for causa, nomes in por_causa.items()])
 
     parametros = []
     for p in intencao["parametros"]:
@@ -346,19 +424,20 @@ def compilar(intencao, com_tipos_de_teste=True, fixos=None):
             "dirigido_por_formula": False, "compartilhado": False, "guid": None,
             "armazenamento": ARMAZENAMENTO[p["especie"]], "reporta": False,
         })
-    for nome, formula in ctx.derivados:
+    for derivado in ctx.derivados:
         parametros.append({
-            "nome": nome, "tipo_de_dado": FORGE["length"], "grupo": GRUPO,
-            "de_instancia": False, "formula": formula, "dirigido_por_formula": True,
-            "compartilhado": False, "guid": None, "armazenamento": "Double", "reporta": False,
+            "nome": derivado["nome"], "tipo_de_dado": FORGE[derivado["especie"]], "grupo": GRUPO,
+            "de_instancia": False, "formula": derivado["formula"], "dirigido_por_formula": True,
+            "compartilhado": False, "guid": None,
+            "armazenamento": ARMAZENAMENTO[derivado["especie"]], "reporta": False,
         })
 
     especie = {p["nome"]: p["especie"] for p in intencao["parametros"]}
     tipos_spec, medicoes = [], {}
     for nome, valores in tipos:
         saida = {k: _valor_para_tipo(especie[k], v) for k, v in valores.items() if k in especie}
-        for derivado, formula in ctx.derivados:
-            saida[derivado] = ex.avaliar(formula, valores)
+        for derivado in ctx.derivados:
+            saida[derivado["nome"]] = derivado["valor"](valores)
         tipos_spec.append({"nome": nome, "valores": saida})
         medicoes[nome] = _assinatura(ctx, valores)
 
@@ -387,6 +466,6 @@ def compilar(intencao, com_tipos_de_teste=True, fixos=None):
             "modo": intencao["modo"],
             "tipos_de_teste": [n for n, _ in tipos if n.startswith(PREFIXO_TESTE)],
             "fixos": dict(fixos or {}),
-            "derivados": [n for n, _ in ctx.derivados],
+            "derivados": [d["nome"] for d in ctx.derivados],
         },
     }

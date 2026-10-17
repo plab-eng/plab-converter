@@ -81,7 +81,10 @@ def substituir(texto, valores):
     class _Troca(ast.NodeTransformer):
         def visit_Name(self, no):
             if no.id in valores:
-                return ast.copy_location(ast.Constant(float(valores[no.id])), no)
+                valor = valores[no.id]
+                # Índice de array fica inteiro ("k - 1", não "1.0 - 1").
+                valor = valor if isinstance(valor, int) else float(valor)
+                return ast.copy_location(ast.Constant(valor), no)
             return no
     arvore = _Troca().visit(_arvore(texto))
     return ast.unparse(ast.fix_missing_locations(arvore))

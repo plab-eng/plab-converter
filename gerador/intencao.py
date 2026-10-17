@@ -28,13 +28,55 @@ PADROES = {
               "opcionais": ("base", "centro_x", "centro_y")},
     "cilindro": {"obrigatorios": ("diametro", "altura"),
                  "opcionais": ("base",)},
+    # Cópias de um padrão simples. Os argumentos do item podem usar o índice
+    # da cópia: k (1..n) no linear; i (1..linhas) e j (1..colunas) no retangular.
+    "array_linear": {"obrigatorios": ("item", "n"), "opcionais": ("n_max",)},
+    "array_retangular": {"obrigatorios": ("item", "linhas", "colunas"), "opcionais": ()},
 }
+SIMPLES = ("caixa", "cilindro")
+INDICES = {"array_linear": ("k",), "array_retangular": ("i", "j")}
 
 _CHAVES_RAIZ = {"versao_intencao", "modo", "categoria", "nome", "perfil", "entradas",
                 "parametros", "componentes", "tipos", "perguntas", "lacunas_aceitas"}
 _CHAVES_PARAMETRO = {"nome", "especie", "instancia", "padrao", "faixa", "origem"}
 _CHAVES_COMPONENTE = {"id", "padrao", "args", "subcategoria", "material"}
 _CHAVES_ENTRADAS = {"imagem", "ficha", "preenchido_por"}
+
+
+def _conferir_expressoes(args, nomes_param, indices, onde, problemas):
+    for chave, texto in args.items():
+        try:
+            for usado in expressao.nomes(str(texto)):
+                if usado not in nomes_param and usado not in indices:
+                    problemas.append(f"{onde}.{chave}: parâmetro {usado!r} não declarado")
+        except expressao.ExpressaoInvalida as erro:
+            problemas.append(f"{onde}.{chave}: {erro}")
+
+
+def _conferir_array(padrao, args, nomes_param, onde, problemas):
+    item = args.get("item") or {}
+    if item.get("padrao") not in SIMPLES:
+        problemas.append(f"{onde}.item: padrao deve ser um de {SIMPLES}")
+        return
+    regra = PADROES[item["padrao"]]
+    item_args = item.get("args") or {}
+    _sobra(item, {"padrao", "args"}, f"{onde}.item", problemas)
+    _sobra(item_args, set(regra["obrigatorios"]) | set(regra["opcionais"]), f"{onde}.item.args", problemas)
+    for chave in regra["obrigatorios"]:
+        if chave not in item_args:
+            problemas.append(f"{onde}.item.args: {chave!r} obrigatório no padrão {item['padrao']}")
+    _conferir_expressoes(item_args, nomes_param, INDICES[padrao], f"{onde}.item.args", problemas)
+    if padrao == "array_retangular":
+        for chave in ("linhas", "colunas"):
+            if not isinstance(args.get(chave), int) or args[chave] < 1:
+                problemas.append(f"{onde}.{chave}: inteiro >= 1")
+        return
+    n = str(args.get("n"))
+    if expressao.eh_nome(n) and n in nomes_param:
+        if not isinstance(args.get("n_max"), int) or args["n_max"] < 1:
+            problemas.append(f"{onde}.n_max: inteiro >= 1 obrigatório quando n é parâmetro")
+    elif not n.isdigit() or int(n) < 1:
+        problemas.append(f"{onde}.n: nome de parâmetro inteiro ou número >= 1 (veio {n!r})")
 
 
 class IntencaoRecusada(ValueError):
@@ -119,13 +161,10 @@ def validar(dados):
         for chave in regra["obrigatorios"]:
             if chave not in args:
                 problemas.append(f"{onde}.args: {chave!r} obrigatório no padrão {padrao}")
-        for chave, texto in args.items():
-            try:
-                for usado in expressao.nomes(str(texto)):
-                    if usado not in nomes_param:
-                        problemas.append(f"{onde}.args.{chave}: parâmetro {usado!r} não declarado")
-            except expressao.ExpressaoInvalida as erro:
-                problemas.append(f"{onde}.args.{chave}: {erro}")
+        if padrao in SIMPLES:
+            _conferir_expressoes(args, nomes_param, (), f"{onde}.args", problemas)
+        else:
+            _conferir_array(padrao, args, nomes_param, f"{onde}.args", problemas)
     if not ids:
         problemas.append("nenhum componente")
 

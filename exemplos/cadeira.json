@@ -1,0 +1,131 @@
+{
+  "versao_intencao": "0.1",
+  "modo": "parametrico",
+  "categoria": "Furniture",
+  "nome": "PLAB_MOB_Cadeira",
+  "entradas": {
+    "imagem": "entradas/cadeira.jpg",
+    "ficha": null,
+    "preenchido_por": "regra"
+  },
+  "perguntas": [],
+  "lacunas_aceitas": [],
+  "parametros": [
+    {
+      "nome": "Largura",
+      "especie": "length",
+      "instancia": false,
+      "padrao": 450,
+      "faixa": [
+        380,
+        600
+      ],
+      "origem": "regra"
+    },
+    {
+      "nome": "Profundidade",
+      "especie": "length",
+      "instancia": false,
+      "padrao": 480,
+      "faixa": [
+        400,
+        600
+      ],
+      "origem": "regra"
+    },
+    {
+      "nome": "Altura_Assento",
+      "especie": "length",
+      "instancia": false,
+      "padrao": 450,
+      "faixa": [
+        400,
+        500
+      ],
+      "origem": "regra"
+    },
+    {
+      "nome": "Altura_Total",
+      "especie": "length",
+      "instancia": false,
+      "padrao": 850,
+      "faixa": [
+        750,
+        1100
+      ],
+      "origem": "regra"
+    },
+    {
+      "nome": "Espessura_Assento",
+      "especie": "length",
+      "instancia": false,
+      "padrao": 40,
+      "faixa": [
+        20,
+        60
+      ],
+      "origem": "regra"
+    },
+    {
+      "nome": "Lado_Pe",
+      "especie": "length",
+      "instancia": false,
+      "padrao": 40,
+      "faixa": [
+        25,
+        60
+      ],
+      "origem": "regra"
+    }
+  ],
+  "componentes": [
+    {
+      "id": "assento",
+      "padrao": "caixa",
+      "subcategoria": "Assento",
+      "args": {
+        "largura": "Largura",
+        "profundidade": "Profundidade",
+        "altura": "Espessura_Assento",
+        "base": "Altura_Assento - Espessura_Assento"
+      }
+    },
+    {
+      "id": "encosto",
+      "padrao": "caixa",
+      "subcategoria": "Encosto",
+      "args": {
+        "largura": "Largura",
+        "profundidade": "30",
+        "altura": "Altura_Total - Altura_Assento",
+        "base": "Altura_Assento",
+        "centro_y": "Profundidade / 2 - 15"
+      }
+    },
+    {
+      "id": "pe",
+      "padrao": "array_retangular",
+      "subcategoria": "Pes",
+      "args": {
+        "linhas": 2,
+        "colunas": 2,
+        "item": {
+          "padrao": "caixa",
+          "args": {
+            "largura": "Lado_Pe",
+            "profundidade": "Lado_Pe",
+            "altura": "Altura_Assento - Espessura_Assento",
+            "centro_x": "(2 * i - 3) * (Largura / 2 - Lado_Pe / 2)",
+            "centro_y": "(2 * j - 3) * (Profundidade / 2 - Lado_Pe / 2)"
+          }
+        }
+      }
+    }
+  ],
+  "tipos": [
+    {
+      "nome": "Padrao",
+      "valores": {}
+    }
+  ]
+}

@@ -644,6 +644,7 @@ def construir_formas(doc, vista, especificacao, planos, parametros):
             continue
 
         mapa[item[u"indice"]] = forma
+        _aplicar_subcategoria_e_visibilidade(doc, item, forma)
         doc.Regenerate()
 
         # Trava e associa ESTA forma antes de a próxima nascer, como na
@@ -741,7 +742,7 @@ def _linha_para_cota(referencias_spec, planos):
 def construir_cotas(doc, vista, especificacao, planos, parametros):
     u"""Cotas rotuladas: onde o flex é religado (dim.FamilyLabel)."""
     for indice, item in enumerate(especificacao[u"cotas"]):
-        if item.get(u"forma") == u"Radial":
+        if item.get(u"forma") in (u"Radial", u"Diameter"):
             continue  # nasce depois da forma (construir_cotas_radiais)
         rotulo = item.get(u"rotulo")
 
@@ -778,6 +779,41 @@ def construir_cotas(doc, vista, especificacao, planos, parametros):
     doc.Regenerate()
 
 
+def _aplicar_subcategoria_e_visibilidade(doc, item, forma):
+    u"""Subcategoria pelo NOME (criada se não existir) e visibilidade fixa.
+
+    O leitor sempre gravou os dois campos e o construtor os ignorava: a forma
+    saía na subcategoria padrão e visível. A API foi provada na sonda S6 da G0.
+    A visibilidade dirigida por parâmetro continua vindo das associações.
+    """
+    nome = item.get(u"subcategoria")
+    if nome:
+        try:
+            categoria = doc.OwnerFamily.FamilyCategory
+            subcategoria = None
+            for existente in categoria.SubCategories:
+                if existente.Name == nome:
+                    subcategoria = existente
+                    break
+            if subcategoria is None:
+                subcategoria = doc.Settings.Categories.NewSubcategory(categoria, nome)
+            forma.Subcategory = subcategoria
+        except Exception as erro:
+            _pular(u"subcategoria '{0}' da forma #{1}".format(nome, item[u"indice"]),
+                   unicode(erro)[:140])  # noqa: F821
+    # Visibilidade associada a parâmetro (cópia de array do gerador, ou família
+    # real com "Visible" ligado a sim/não) vem pela associação; fixar o valor
+    # aqui é recusado pelo Revit e não muda nada.
+    associada = any((a or {}).get(u"builtin") == u"IS_VISIBLE_PARAM"
+                    for a in (item.get(u"associacoes") or {}).values())
+    if item.get(u"visivel") is False and not associada:
+        try:
+            forma.Visible = False
+        except Exception as erro:
+            _pular(u"visibilidade da forma #{0}".format(item[u"indice"]),
+                   unicode(erro)[:140])  # noqa: F821
+
+
 def construir_cotas_radiais(doc, vista, especificacao, formas, parametros):
     u"""Cota radial rotulada na curva do ESBOÇO de uma forma (schema 0.2.0).
 
@@ -786,10 +822,14 @@ def construir_cotas_radiais(doc, vista, especificacao, formas, parametros):
     plano. A referência que funciona é `Extrusion.Sketch.Profile[laço][curva]`.
     """
     for indice, item in enumerate(especificacao[u"cotas"]):
-        if item.get(u"forma") != u"Radial":
+        if item.get(u"forma") not in (u"Radial", u"Diameter"):
             continue
         rotulo = item.get(u"rotulo")
         endereco = item[u"referencias"][0]
+        if endereco.get(u"tipo") != u"esboco":
+            _pular(u"cota {0} #{1} (rótulo={2})".format(item[u"forma"], indice, rotulo),
+                   u"referência fora do esboço (só a curva do esboço é endereçável)")
+            continue
         forma = formas.get(endereco[u"forma"])
         if forma is None:
             _pular(u"cota radial #{0} (rótulo={1})".format(indice, rotulo),
@@ -800,7 +840,10 @@ def construir_cotas_radiais(doc, vista, especificacao, formas, parametros):
             curva = list(laco)[endereco[u"curva"]]
             centro = curva.Center
             origem = XYZ(centro.X + curva.Radius * 0.7, centro.Y + curva.Radius * 0.7, 0.0)
-            cota = doc.FamilyCreate.NewRadialDimension(vista, curva.Reference, origem)
+            if item[u"forma"] == u"Diameter":
+                cota = doc.FamilyCreate.NewDiameterDimension(vista, curva.Reference, origem)
+            else:
+                cota = doc.FamilyCreate.NewRadialDimension(vista, curva.Reference, origem)
             parametro = parametros.get(rotulo)
             if parametro is None:
                 _pular(u"rótulo da cota radial #{0}".format(indice),
