@@ -1,14 +1,13 @@
 # G3 — entradas: formulário sem IA, prévia, imagem do tipo e ficha técnica por regra (17/10/2026)
 
-Spec: `docs/SPEC-geracao-familias.md` §3.4 e §10 (G3). A G3 tem quatro peças; três estão feitas e a quarta
-(IA opcional) espera fotos reais.
+Spec: `docs/SPEC-geracao-familias.md` §3.4 e §10 (G3). As quatro peças estão feitas.
 
 | Peça | Situação |
 |---|---|
 | Formulário sem IA (modelos prontos + perguntas) | **feito** |
 | Imagem obrigatória → prévia + Type Image na família | **feito** |
 | Extrator de ficha técnica em PDF, por regra | **feito** (parte 2, abaixo), com as 3 fichas recebidas do José |
-| IA opcional preenchendo o formulário a partir da imagem | **aguardando fotos reais** para medir acerto contra a régua de 96% |
+| IA opcional preenchendo o formulário a partir da imagem | **feito** com as 3 imagens do José (parte 3) |
 
 ## Formulário sem IA
 
@@ -81,9 +80,35 @@ profundidade é comparada pixel a pixel e as arestas saem onde muda a face visí
 
 Testes: 43 (pytest, < 1 s), com trechos do texto real das três fichas.
 
-## O que falta na G3
+## Parte 3 — IA preenchendo o formulário a partir da imagem (teste de ouro)
 
-- **Fotos:** algumas fotos reais de móveis com as medidas conhecidas, para medir a IA preenchendo o formulário
-  contra a régua de 96% (spec §9). A IA continua opcional.
-- As perguntas abertas das duas estantes foram respondidas com o padrão sugerido pela ficha; o José pode
-  responder de verdade (`--respostas`) e gerar de novo.
+A IA (aqui, o próprio Claude Code, como fará o Assistant no produto) olha a imagem, escolhe o modelo e responde
+às perguntas dele; nunca escreve a FamilySpec. A intenção registra `preenchido_por: ia`. A régua
+(`gerador/regua.py`) compara a extensão **medida no Revit** na família gerada com as cotas escritas na imagem.
+
+| Imagem (17/10) | Modelo escolhido | Leitura da IA | Revit 2024 | Régua 96% |
+|---|---|---|---|---|
+| Balcão Saara 80 × 37 × 75 cm, 1 porta + 4 gavetas | `balcao_porta_gavetas` (novo) | L 800; corpo 352 + frente 18 = 370; A 750; rodapé ≈ 40 (estimado na foto); 4 gavetas | APROVADA, 19/19 tipos de teste | **100% / 100% / 100%** |
+| Estante 60 × 30 × 160 cm, MDF 1,5, 2 portas inferiores, vãos de 37 | `estante_portas_inferiores` | L 600; corpo 285 (+ porta) ; A 1600; chapa 15; balcão 815 (da conta dos vãos); 1 prateleira em cima | APROVADA, 17/17 | **100% / 99% / 100%** (porta saiu com 18 mm: o modelo não pergunta a espessura da porta) |
+| Guarda-roupa, vista interna com cabideiros, gavetas e nichos | nenhum: fora do catálogo | a imagem não dá as medidas externas totais | não gerado | — |
+
+Ressalvas, para não ler mais do que foi medido:
+- as duas imagens trazem as cotas escritas; o teste mede a IA **lendo** cotas e escolhendo o modelo, não
+  estimando medidas de uma foto sem cota;
+- a régua fica no bbox: a imagem não dá o volume real;
+- o que o modelo não tem fica de fora e deveria virar lacuna aceita: na estante, o rodapé de 7 cm e a
+  prateleira interna do balcão; no balcão, puxadores e fechadura;
+- o guarda-roupa pede "modelo completo" (divisões internas, cabideiro, gavetas em grade), fase posterior.
+
+Modelo novo `balcao_porta_gavetas`: rodapé recuado, corpo, 1 porta e coluna de gavetas (2 a 6, frentes de
+mesma altura, contagem paramétrica). A faixa de profundidade da `estante_portas_inferiores` foi alargada para
+250–600 (o corpo de uma estante de 30 cm com porta de 15 tem 285).
+
+Testes: 45 (pytest, < 1 s).
+
+## Pendências
+
+- As perguntas abertas das estantes vindas de ficha foram respondidas com o padrão sugerido pela ficha; o José
+  pode responder de verdade (`--respostas`) e gerar de novo.
+- Teste de ouro com foto **sem** cotas (a IA estimando proporções), para medir o caso difícil.
+- Perguntar a espessura das frentes na `estante_portas_inferiores` (fonte do 1% da estante).

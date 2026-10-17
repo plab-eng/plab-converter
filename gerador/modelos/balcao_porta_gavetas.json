@@ -1,0 +1,265 @@
+{
+  "modelo": "balcao_porta_gavetas",
+  "descricao": "Balcão baixo com 1 porta e coluna de gavetas",
+  "intencao": {
+    "versao_intencao": "0.1",
+    "modo": "parametrico",
+    "categoria": "Furniture",
+    "parametros": [
+      {
+        "nome": "Largura",
+        "especie": "length",
+        "instancia": false,
+        "padrao": 800,
+        "faixa": [
+          400,
+          1600
+        ],
+        "origem": "regra"
+      },
+      {
+        "nome": "Profundidade",
+        "especie": "length",
+        "instancia": false,
+        "padrao": 450,
+        "faixa": [
+          300,
+          700
+        ],
+        "origem": "regra"
+      },
+      {
+        "nome": "Altura",
+        "especie": "length",
+        "instancia": false,
+        "padrao": 750,
+        "faixa": [
+          600,
+          1100
+        ],
+        "origem": "regra"
+      },
+      {
+        "nome": "Espessura",
+        "especie": "length",
+        "instancia": false,
+        "padrao": 18,
+        "faixa": [
+          15,
+          30
+        ],
+        "origem": "regra"
+      },
+      {
+        "nome": "Altura_Rodape",
+        "especie": "length",
+        "instancia": false,
+        "padrao": 50,
+        "faixa": [
+          30,
+          120
+        ],
+        "origem": "regra"
+      },
+      {
+        "nome": "Recuo_Rodape",
+        "especie": "length",
+        "instancia": false,
+        "padrao": 20,
+        "faixa": [
+          5,
+          60
+        ],
+        "origem": "regra"
+      },
+      {
+        "nome": "N_Gavetas",
+        "especie": "integer",
+        "instancia": false,
+        "padrao": 4,
+        "faixa": [
+          2,
+          6
+        ],
+        "origem": "regra"
+      },
+      {
+        "nome": "Espessura_Frente",
+        "especie": "length",
+        "instancia": false,
+        "padrao": 18,
+        "faixa": [
+          15,
+          25
+        ],
+        "origem": "regra"
+      }
+    ],
+    "componentes": [
+      {
+        "id": "rodape",
+        "padrao": "caixa",
+        "subcategoria": "Rodape",
+        "args": {
+          "largura": "Largura - 2 * Recuo_Rodape",
+          "profundidade": "Profundidade - 2 * Recuo_Rodape",
+          "altura": "Altura_Rodape"
+        }
+      },
+      {
+        "id": "lat_esq",
+        "padrao": "caixa",
+        "subcategoria": "Corpo",
+        "args": {
+          "largura": "Espessura",
+          "profundidade": "Profundidade",
+          "altura": "Altura - Altura_Rodape",
+          "base": "Altura_Rodape",
+          "centro_x": "Espessura / 2 - Largura / 2"
+        }
+      },
+      {
+        "id": "lat_dir",
+        "padrao": "caixa",
+        "subcategoria": "Corpo",
+        "args": {
+          "largura": "Espessura",
+          "profundidade": "Profundidade",
+          "altura": "Altura - Altura_Rodape",
+          "base": "Altura_Rodape",
+          "centro_x": "Largura / 2 - Espessura / 2"
+        }
+      },
+      {
+        "id": "base",
+        "padrao": "caixa",
+        "subcategoria": "Corpo",
+        "args": {
+          "largura": "Largura - 2 * Espessura",
+          "profundidade": "Profundidade",
+          "altura": "Espessura",
+          "base": "Altura_Rodape"
+        }
+      },
+      {
+        "id": "topo",
+        "padrao": "caixa",
+        "subcategoria": "Corpo",
+        "args": {
+          "largura": "Largura - 2 * Espessura",
+          "profundidade": "Profundidade",
+          "altura": "Espessura",
+          "base": "Altura - Espessura"
+        }
+      },
+      {
+        "id": "porta",
+        "padrao": "caixa",
+        "subcategoria": "Frentes",
+        "args": {
+          "largura": "Largura / 2 - 4",
+          "profundidade": "Espessura_Frente",
+          "altura": "Altura - Altura_Rodape - 6",
+          "base": "Altura_Rodape + 3",
+          "centro_x": "0 - Largura / 4",
+          "centro_y": "0 - Profundidade / 2 - Espessura_Frente / 2"
+        }
+      },
+      {
+        "id": "gaveta",
+        "padrao": "array_linear",
+        "subcategoria": "Frentes",
+        "args": {
+          "n": "N_Gavetas",
+          "n_max": 6,
+          "item": {
+            "padrao": "caixa",
+            "args": {
+              "largura": "Largura / 2 - 4",
+              "profundidade": "Espessura_Frente",
+              "altura": "(Altura - Altura_Rodape - 3) / N_Gavetas - 3",
+              "base": "Altura_Rodape + 3 + (k - 1) * (Altura - Altura_Rodape - 3) / N_Gavetas",
+              "centro_x": "Largura / 4",
+              "centro_y": "0 - Profundidade / 2 - Espessura_Frente / 2"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "perguntas": [
+    {
+      "id": "largura",
+      "pergunta": "Largura total (mm)?",
+      "padrao": 800,
+      "por_que": "medida principal",
+      "alvo": "Largura",
+      "faixa": [
+        400,
+        1600
+      ]
+    },
+    {
+      "id": "profundidade",
+      "pergunta": "Profundidade do corpo, sem as frentes (mm)?",
+      "padrao": 450,
+      "por_que": "a profundidade total soma a espessura das frentes",
+      "alvo": "Profundidade",
+      "faixa": [
+        300,
+        700
+      ]
+    },
+    {
+      "id": "altura",
+      "pergunta": "Altura total, com o rodapé (mm)?",
+      "padrao": 750,
+      "por_que": "medida principal",
+      "alvo": "Altura",
+      "faixa": [
+        600,
+        1100
+      ]
+    },
+    {
+      "id": "rodape",
+      "pergunta": "Altura do rodapé (mm)?",
+      "padrao": 50,
+      "por_que": "base recuada sob o corpo",
+      "alvo": "Altura_Rodape",
+      "faixa": [
+        30,
+        120
+      ]
+    },
+    {
+      "id": "gavetas",
+      "pergunta": "Quantas gavetas na coluna?",
+      "padrao": 4,
+      "por_que": "frentes de mesma altura",
+      "alvo": "N_Gavetas",
+      "faixa": [
+        2,
+        6
+      ],
+      "opcoes": [
+        2,
+        3,
+        4,
+        5,
+        6
+      ]
+    },
+    {
+      "id": "frente",
+      "pergunta": "Espessura das frentes (porta e gavetas, mm)?",
+      "padrao": 18,
+      "por_que": "somam à profundidade total",
+      "alvo": "Espessura_Frente",
+      "faixa": [
+        15,
+        25
+      ]
+    }
+  ]
+}

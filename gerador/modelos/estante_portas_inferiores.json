@@ -23,7 +23,7 @@
         "instancia": false,
         "padrao": 400,
         "faixa": [
-          300,
+          250,
           600
         ],
         "origem": "regra"
@@ -199,7 +199,7 @@
       "por_que": "medida principal",
       "alvo": "Profundidade",
       "faixa": [
-        300,
+        250,
         600
       ]
     },
