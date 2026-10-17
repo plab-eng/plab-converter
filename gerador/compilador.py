@@ -288,7 +288,106 @@ def padrao_cilindro(ctx, comp, v0, visivel=None):
     ctx.geometrias.append(lambda valores: cilindro(valores) if aparece(valores) else None)
 
 
-PADROES = {"caixa": padrao_caixa, "cilindro": padrao_cilindro}
+# --------------------------------------------------------------------------
+# Padrões estáticos (G4): geometria fixa, sem cotas nem travas
+# --------------------------------------------------------------------------
+
+def _forma_estatica(ctx, comp, tipo, perfil, plano, extra):
+    indice = len(ctx.formas)
+    forma = {"indice": indice, "tipo": tipo, "solido": True, "perfil": perfil,
+             "plano_de_esboco": plano, "associacoes": {}, "subcategoria": comp.get("subcategoria"),
+             "visivel": True, "componente": comp["id"]}
+    forma.update(extra)
+    ctx.formas.append(forma)
+    if comp.get("material"):
+        ctx.lacunas.append({"componente": comp["id"], "motivo":
+                            f"material {comp['material']!r} ainda não é construído "
+                            "(materiais por nome, roadmap do conversor)"})
+    return indice
+
+
+def _area_e_momento(pontos):
+    """Área (com sinal) e momento de 1ª ordem em relação ao 1º eixo do polígono."""
+    area = momento = 0.0
+    for (a0, b0), (a1, b1) in zip(pontos, pontos[1:] + pontos[:1]):
+        cruz = a0 * b1 - a1 * b0
+        area += cruz / 2
+        momento += (a0 + a1) * cruz / 6
+    return area, momento
+
+
+def padrao_perfil_extrudado(ctx, comp, v0, visivel=None):
+    """Polígono num plano vertical, extrudado (cadeira de balanço, peças inclinadas).
+
+    plano "yz": pontos (y, z), extrusão em +x a partir de x = inicio;
+    plano "xz": pontos (x, z), extrusão em +y a partir de y = inicio.
+    """
+    args = comp["args"]
+    pontos = [[float(a), float(b)] for a, b in args["pontos"]]
+    inicio, espessura = float(args["inicio"]), float(args["espessura"])
+    area, _ = _area_e_momento(pontos)
+    if abs(area) < 1.0:
+        raise CompilacaoRecusada([f"{comp['id']}: perfil sem área"])
+    if espessura <= 0:
+        raise CompilacaoRecusada([f"{comp['id']}: espessura precisa ser positiva"])
+    if args["plano"] == "yz":
+        mundo = [[inicio, a, b] for a, b in pontos]
+        plano = {"normal": [1.0, 0.0, 0.0], "origem": [inicio, 0.0, 0.0]}
+    else:
+        mundo = [[a, inicio, b] for a, b in pontos]
+        plano = {"normal": [0.0, 1.0, 0.0], "origem": [0.0, inicio, 0.0]}
+    perfil = [[_linha(p, q) for p, q in zip(mundo, mundo[1:] + mundo[:1])]]
+    _forma_estatica(ctx, comp, "extrusao", perfil, plano,
+                    {"deslocamento_inicial": 0.0, "deslocamento_final": espessura})
+    eixo_extrusao = 0 if args["plano"] == "yz" else 1
+    minimo = [min(p[e] for p in mundo) for e in range(3)]
+    maximo = [max(p[e] for p in mundo) for e in range(3)]
+    maximo[eixo_extrusao] = inicio + espessura
+    volume = abs(area) * espessura
+    primitiva = {"prisma": {"pontos": mundo, "direcao": [1.0 if e == eixo_extrusao else 0.0 for e in range(3)],
+                            "espessura": espessura}}
+    ctx.geometrias.append(lambda valores: (minimo, maximo, volume, 0.1, primitiva))
+
+
+def padrao_revolucao(ctx, comp, v0, visivel=None):
+    """Perfil (raio, posição no eixo) girado 360° (globo, cúpula, peça torneada).
+
+    eixo "z": vertical por (cx, cy), posição = altura acima de cz;
+    eixo "y": horizontal por (cx, cz), posição = deslocamento em y a partir de cy.
+    """
+    args = comp["args"]
+    pontos = [[float(r), float(h)] for r, h in args["perfil"]]
+    cx, cy, cz = [float(v) for v in args["centro"]]
+    if any(r < 0 for r, _ in pontos):
+        raise CompilacaoRecusada([f"{comp['id']}: raio negativo (o perfil não pode cruzar o eixo)"])
+    area, momento = _area_e_momento(pontos)
+    if abs(area) < 1.0:
+        raise CompilacaoRecusada([f"{comp['id']}: perfil sem área"])
+    hs = [h for _, h in pontos]
+    if args["eixo"] == "z":
+        mundo = [[cx + r, cy, cz + h] for r, h in pontos]
+        plano = {"normal": [0.0, 1.0, 0.0], "origem": [cx, cy, cz]}
+        eixo = {"inicio": [cx, cy, cz + min(hs)], "fim": [cx, cy, cz + max(hs)]}
+    else:
+        mundo = [[cx + r, cy + h, cz] for r, h in pontos]
+        plano = {"normal": [0.0, 0.0, 1.0], "origem": [cx, cy, cz]}
+        eixo = {"inicio": [cx, cy + min(hs), cz], "fim": [cx, cy + max(hs), cz]}
+    perfil = [[_linha(p, q) for p, q in zip(mundo, mundo[1:] + mundo[:1])]]
+    _forma_estatica(ctx, comp, "revolucao", perfil, plano,
+                    {"eixo": eixo, "angulo_inicial": 0.0, "angulo_final": 2 * math.pi})
+    rmax = max(r for r, _ in pontos)
+    if args["eixo"] == "z":
+        minimo, maximo = [cx - rmax, cy - rmax, cz + min(hs)], [cx + rmax, cy + rmax, cz + max(hs)]
+    else:
+        minimo, maximo = [cx - rmax, cy + min(hs), cz - rmax], [cx + rmax, cy + max(hs), cz + rmax]
+    volume = 2 * math.pi * abs(momento)  # Pappus: 2π ∫∫ r dA
+    primitiva = {"revolucao": {"perfil": pontos, "centro": [cx, cy, cz], "eixo": args["eixo"]}}
+    # Superfície curva medida pela malha: tolerância proporcional ao raio.
+    ctx.geometrias.append(lambda valores: (minimo, maximo, volume, max(0.5, 0.004 * 2 * rmax), primitiva))
+
+
+PADROES = {"caixa": padrao_caixa, "cilindro": padrao_cilindro,
+           "perfil_extrudado": padrao_perfil_extrudado, "revolucao": padrao_revolucao}
 
 
 def _expandir(ctx, comp):

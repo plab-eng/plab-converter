@@ -36,6 +36,45 @@ def _faces_cilindro(cx, cy, r, z0, z1):
     return faces
 
 
+def _faces_prisma(pontos, direcao, espessura):
+    topo = [[p[e] + direcao[e] * espessura for e in range(3)] for p in pontos]
+    faces = [(list(map(tuple, pontos)), None), (list(map(tuple, topo)), None)]
+    for k in range(len(pontos)):
+        a, b = pontos[k], pontos[(k + 1) % len(pontos)]
+        ta, tb = topo[k], topo[(k + 1) % len(pontos)]
+        faces.append(([tuple(a), tuple(b), tuple(tb), tuple(ta)], None))
+    return faces
+
+
+def _faces_revolucao(perfil, centro, eixo):
+    cx, cy, cz = centro
+    passos = _LADOS_CILINDRO
+
+    def ponto(r, h, ang):
+        if eixo == "z":
+            return (cx + r * math.cos(ang), cy + r * math.sin(ang), cz + h)
+        return (cx + r * math.cos(ang), cy + h, cz + r * math.sin(ang))
+
+    faces = []
+    for (r0, h0), (r1, h1) in zip(perfil, perfil[1:] + perfil[:1]):
+        for k in range(passos):
+            a0, a1 = 2 * math.pi * k / passos, 2 * math.pi * (k + 1) / passos
+            faces.append(([ponto(r0, h0, a0), ponto(r1, h1, a0), ponto(r1, h1, a1), ponto(r0, h0, a1)], None))
+    return faces
+
+
+def _normal_de_newell(pontos):
+    n = [0.0, 0.0, 0.0]
+    for (x0, y0, z0), (x1, y1, z1) in zip(pontos, pontos[1:] + pontos[:1]):
+        n[0] += (y0 - y1) * (z0 + z1)
+        n[1] += (z0 - z1) * (x0 + x1)
+        n[2] += (x0 - x1) * (y0 + y1)
+    # Orientada para a câmera (-1, -1, 1): a face visível é a que o z-buffer deixar.
+    if -n[0] - n[1] + n[2] < 0:
+        n = [-v for v in n]
+    return tuple(n)
+
+
 def _projetar(ponto):
     """Isométrica vista da frente-esquerda (câmera em -x, -y, +z)."""
     x, y, z = ponto
@@ -49,8 +88,23 @@ def desenhar(primitivas, caminho, lado=512, legenda=None):
             faces += _faces_caixa(*primitiva["caixa"])
         elif "cilindro" in primitiva:
             faces += _faces_cilindro(*primitiva["cilindro"])
+        elif "prisma" in primitiva:
+            faces += _faces_prisma(**primitiva["prisma"])
+        elif "revolucao" in primitiva:
+            faces += _faces_revolucao(**primitiva["revolucao"])
     # Visível: normal apontando para a câmera (-1, -1, 1).
-    visiveis = [(pts, n) for pts, n in faces if -n[0] - n[1] + n[2] > 1e-9]
+    # Caixa e cilindro trazem a normal de fábrica: as faces de trás saem já aqui.
+    # Prisma e revolução calculam a normal (orientada para a câmera) e ficam
+    # todas; quem decide o que aparece é o z-buffer.
+    visiveis = []
+    for pts, n in faces:
+        if n is None:
+            n = _normal_de_newell(pts)
+            if sum(abs(c) for c in n) < 1e-12:
+                continue  # face degenerada (ex.: aresta sobre o eixo)
+        elif -n[0] - n[1] + n[2] <= 1e-9:
+            continue
+        visiveis.append((pts, n))
     if not visiveis:
         raise ValueError("nada a desenhar")
 

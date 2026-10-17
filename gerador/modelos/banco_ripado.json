@@ -1,0 +1,274 @@
+{
+  "modelo": "banco_ripado",
+  "descricao": "Banco de praça com estrutura de tubo e ripas (3 no assento, 2 tábuas no encosto até o topo dos montantes)",
+  "intencao": {
+    "versao_intencao": "0.1",
+    "modo": "parametrico",
+    "categoria": "Furniture",
+    "parametros": [
+      {
+        "nome": "Comprimento",
+        "especie": "length",
+        "instancia": false,
+        "padrao": 1800,
+        "faixa": [
+          1000,
+          2500
+        ],
+        "origem": "regra"
+      },
+      {
+        "nome": "Profundidade",
+        "especie": "length",
+        "instancia": false,
+        "padrao": 550,
+        "faixa": [
+          400,
+          700
+        ],
+        "origem": "regra"
+      },
+      {
+        "nome": "Altura_Assento",
+        "especie": "length",
+        "instancia": false,
+        "padrao": 450,
+        "faixa": [
+          380,
+          500
+        ],
+        "origem": "regra"
+      },
+      {
+        "nome": "Altura_Total",
+        "especie": "length",
+        "instancia": false,
+        "padrao": 820,
+        "faixa": [
+          700,
+          1000
+        ],
+        "origem": "regra"
+      },
+      {
+        "nome": "Lado_Tubo",
+        "especie": "length",
+        "instancia": false,
+        "padrao": 50,
+        "faixa": [
+          30,
+          80
+        ],
+        "origem": "regra"
+      },
+      {
+        "nome": "Espessura_Ripa",
+        "especie": "length",
+        "instancia": false,
+        "padrao": 35,
+        "faixa": [
+          20,
+          50
+        ],
+        "origem": "regra"
+      },
+      {
+        "nome": "Folga_Encosto",
+        "especie": "length",
+        "instancia": false,
+        "padrao": 60,
+        "faixa": [
+          20,
+          120
+        ],
+        "origem": "regra"
+      }
+    ],
+    "componentes": [
+      {
+        "id": "pe_frente",
+        "padrao": "array_retangular",
+        "subcategoria": "Estrutura",
+        "args": {
+          "linhas": 2,
+          "colunas": 1,
+          "item": {
+            "padrao": "caixa",
+            "args": {
+              "largura": "Lado_Tubo",
+              "profundidade": "Lado_Tubo",
+              "altura": "Altura_Assento - Espessura_Ripa",
+              "centro_x": "(2 * i - 3) * (Comprimento / 2 - Lado_Tubo / 2)",
+              "centro_y": "0 - Profundidade / 2 + Lado_Tubo / 2"
+            }
+          }
+        }
+      },
+      {
+        "id": "montante",
+        "padrao": "array_retangular",
+        "subcategoria": "Estrutura",
+        "args": {
+          "linhas": 2,
+          "colunas": 1,
+          "item": {
+            "padrao": "caixa",
+            "args": {
+              "largura": "Lado_Tubo",
+              "profundidade": "Lado_Tubo",
+              "altura": "Altura_Total",
+              "centro_x": "(2 * i - 3) * (Comprimento / 2 - Lado_Tubo / 2)",
+              "centro_y": "Profundidade / 2 - Lado_Tubo / 2"
+            }
+          }
+        }
+      },
+      {
+        "id": "travessa_lateral",
+        "padrao": "array_retangular",
+        "subcategoria": "Estrutura",
+        "args": {
+          "linhas": 2,
+          "colunas": 1,
+          "item": {
+            "padrao": "caixa",
+            "args": {
+              "largura": "Lado_Tubo",
+              "profundidade": "Profundidade - 2 * Lado_Tubo",
+              "altura": "Lado_Tubo",
+              "base": "Altura_Assento - Espessura_Ripa - Lado_Tubo",
+              "centro_x": "(2 * i - 3) * (Comprimento / 2 - Lado_Tubo / 2)"
+            }
+          }
+        }
+      },
+      {
+        "id": "travessa_frontal",
+        "padrao": "caixa",
+        "subcategoria": "Estrutura",
+        "args": {
+          "largura": "Comprimento - 2 * Lado_Tubo",
+          "profundidade": "Lado_Tubo",
+          "altura": "Lado_Tubo",
+          "base": "Altura_Assento - Espessura_Ripa - Lado_Tubo",
+          "centro_y": "0 - Profundidade / 2 + Lado_Tubo / 2"
+        }
+      },
+      {
+        "id": "ripa_assento",
+        "padrao": "array_linear",
+        "subcategoria": "Ripas",
+        "args": {
+          "n": "3",
+          "item": {
+            "padrao": "caixa",
+            "args": {
+              "largura": "Comprimento - 2 * Lado_Tubo",
+              "profundidade": "(Profundidade - 24) / 3",
+              "altura": "Espessura_Ripa",
+              "base": "Altura_Assento - Espessura_Ripa",
+              "centro_y": "0 - Profundidade / 2 + (k - 1) * ((Profundidade - 24) / 3 + 12) + ((Profundidade - 24) / 3) / 2"
+            }
+          }
+        }
+      },
+      {
+        "id": "ripa_encosto",
+        "padrao": "array_linear",
+        "subcategoria": "Ripas",
+        "args": {
+          "n": "2",
+          "item": {
+            "padrao": "caixa",
+            "args": {
+              "largura": "Comprimento - 2 * Lado_Tubo",
+              "profundidade": "Espessura_Ripa",
+              "altura": "(Altura_Total - Altura_Assento - Folga_Encosto - 30) / 2",
+              "base": "Altura_Assento + Folga_Encosto + (k - 1) * ((Altura_Total - Altura_Assento - Folga_Encosto - 30) / 2 + 30)",
+              "centro_y": "Profundidade / 2 - Lado_Tubo / 2"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "perguntas": [
+    {
+      "id": "comprimento",
+      "pergunta": "Comprimento total (mm)?",
+      "padrao": 1800,
+      "por_que": "medida principal",
+      "alvo": "Comprimento",
+      "faixa": [
+        1000,
+        2500
+      ]
+    },
+    {
+      "id": "profundidade",
+      "pergunta": "Profundidade do assento (mm)?",
+      "padrao": 550,
+      "por_que": "medida principal",
+      "alvo": "Profundidade",
+      "faixa": [
+        400,
+        700
+      ]
+    },
+    {
+      "id": "altura_assento",
+      "pergunta": "Altura do assento (mm)?",
+      "padrao": 450,
+      "por_que": "faixa usual de assento: 400 a 480 (referência a conferir em norma antes de citar)",
+      "alvo": "Altura_Assento",
+      "faixa": [
+        380,
+        500
+      ]
+    },
+    {
+      "id": "altura_total",
+      "pergunta": "Altura até o topo do encosto (mm)?",
+      "padrao": 820,
+      "por_que": "medida principal",
+      "alvo": "Altura_Total",
+      "faixa": [
+        700,
+        1000
+      ]
+    },
+    {
+      "id": "tubo",
+      "pergunta": "Lado do tubo quadrado da estrutura (mm)?",
+      "padrao": 50,
+      "por_que": "estrutura metálica",
+      "alvo": "Lado_Tubo",
+      "faixa": [
+        30,
+        80
+      ]
+    },
+    {
+      "id": "ripa",
+      "pergunta": "Espessura das ripas (mm)?",
+      "padrao": 35,
+      "por_que": "madeira",
+      "alvo": "Espessura_Ripa",
+      "faixa": [
+        20,
+        50
+      ]
+    },
+    {
+      "id": "folga_encosto",
+      "pergunta": "Vão entre o assento e a 1ª tábua do encosto (mm)?",
+      "padrao": 60,
+      "por_que": "",
+      "alvo": "Folga_Encosto",
+      "faixa": [
+        20,
+        120
+      ]
+    }
+  ]
+}

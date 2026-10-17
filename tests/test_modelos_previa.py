@@ -6,7 +6,7 @@ from gerador import compilador, modelos, previa
 
 def test_lista_os_modelos():
     nomes = [m["modelo"] for m in modelos.listar()]
-    assert nomes == ["armario", "balcao_porta_gavetas", "bancada", "cadeira", "estante", "estante_portas_inferiores",
+    assert nomes == ["armario", "balcao_porta_gavetas", "bancada", "banco_ripado", "cadeira", "estante", "estante_portas_inferiores",
                      "mesa_4_pes", "mesa_redonda"]
 
 

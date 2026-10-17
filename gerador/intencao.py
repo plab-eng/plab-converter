@@ -30,10 +30,14 @@ PADROES = {
                  "opcionais": ("base",)},
     # Cópias de um padrão simples. Os argumentos do item podem usar o índice
     # da cópia: k (1..n) no linear; i (1..linhas) e j (1..colunas) no retangular.
+    # Estáticos (G4): só números; geometria fixa, sem cotas nem travas.
+    "perfil_extrudado": {"obrigatorios": ("plano", "pontos", "inicio", "espessura"), "opcionais": ()},
+    "revolucao": {"obrigatorios": ("eixo", "perfil", "centro"), "opcionais": ()},
     "array_linear": {"obrigatorios": ("item", "n"), "opcionais": ("n_max",)},
     "array_retangular": {"obrigatorios": ("item", "linhas", "colunas"), "opcionais": ()},
 }
 SIMPLES = ("caixa", "cilindro")
+ESTATICOS = ("perfil_extrudado", "revolucao")
 INDICES = {"array_linear": ("k",), "array_retangular": ("i", "j")}
 
 _CHAVES_RAIZ = {"versao_intencao", "modo", "categoria", "nome", "perfil", "entradas",
@@ -51,6 +55,30 @@ def _conferir_expressoes(args, nomes_param, indices, onde, problemas):
                     problemas.append(f"{onde}.{chave}: parâmetro {usado!r} não declarado")
         except expressao.ExpressaoInvalida as erro:
             problemas.append(f"{onde}.{chave}: {erro}")
+
+
+def _numero(valor):
+    return isinstance(valor, (int, float)) and not isinstance(valor, bool)
+
+
+def _conferir_estatico(padrao, args, onde, problemas):
+    chave_pontos = "pontos" if padrao == "perfil_extrudado" else "perfil"
+    pontos = args.get(chave_pontos)
+    if not (isinstance(pontos, list) and len(pontos) >= 3
+            and all(isinstance(p, list) and len(p) == 2 and all(_numero(v) for v in p) for p in pontos)):
+        problemas.append(f"{onde}.{chave_pontos}: lista de pelo menos 3 pares de números (mm)")
+    if padrao == "perfil_extrudado":
+        if args.get("plano") not in ("yz", "xz"):
+            problemas.append(f"{onde}.plano: 'yz' ou 'xz'")
+        for chave in ("inicio", "espessura"):
+            if not _numero(args.get(chave)):
+                problemas.append(f"{onde}.{chave}: número (mm)")
+    else:
+        if args.get("eixo") not in ("z", "y"):
+            problemas.append(f"{onde}.eixo: 'z' ou 'y'")
+        centro = args.get("centro")
+        if not (isinstance(centro, list) and len(centro) == 3 and all(_numero(v) for v in centro)):
+            problemas.append(f"{onde}.centro: [x, y, z] em mm")
 
 
 def _conferir_array(padrao, args, nomes_param, onde, problemas):
@@ -161,7 +189,9 @@ def validar(dados):
         for chave in regra["obrigatorios"]:
             if chave not in args:
                 problemas.append(f"{onde}.args: {chave!r} obrigatório no padrão {padrao}")
-        if padrao in SIMPLES:
+        if padrao in ESTATICOS:
+            _conferir_estatico(padrao, args, f"{onde}.args", problemas)
+        elif padrao in SIMPLES:
             _conferir_expressoes(args, nomes_param, (), f"{onde}.args", problemas)
         else:
             _conferir_array(padrao, args, nomes_param, f"{onde}.args", problemas)
