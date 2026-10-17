@@ -1,7 +1,7 @@
 # G3 — entradas: formulário sem IA, prévia, imagem do tipo e ficha técnica por regra (17/10/2026)
 
-Spec: `docs/SPEC-geracao-familias.md` §3.4 e §10 (G3). A G3 tem quatro peças; esta entrega fecha duas e
-deixa as outras duas esperando material real.
+Spec: `docs/SPEC-geracao-familias.md` §3.4 e §10 (G3). A G3 tem quatro peças; três estão feitas e a quarta
+(IA opcional) espera fotos reais.
 
 | Peça | Situação |
 |---|---|
@@ -63,7 +63,8 @@ inferiores**. Novo modelo `estante_portas_inferiores` (corpo, tampo do balcão, 
 
 ```
 python -m gerador ficha armario.pdf --modelo estante_portas_inferiores --saida armario.ficha.json
-python -m gerador montar estante_portas_inferiores --nome PLAB_MOB_Armario_Livros --imagem foto.png        --ficha armario.ficha.json [--respostas suas_respostas.json] --saida intencao.json
+python -m gerador montar estante_portas_inferiores --nome PLAB_MOB_Armario_Livros --imagem foto.png ^
+       --ficha armario.ficha.json [--respostas suas_respostas.json] --saida intencao.json
 ```
 
 A origem de cada valor fica na intenção: `ficha` (com a evidência), `usuario`, `padrao_da_ficha` ou `padrao`.
