@@ -885,6 +885,9 @@ def construir_cotas(doc, vista, especificacao, planos, parametros):
     doc.Regenerate()
 
 
+_DOC_EM_CONSTRUCAO = [None]
+
+
 def _aplicar_subcategoria_e_visibilidade(doc, item, forma):
     u"""Subcategoria pelo NOME (criada se não existir) e visibilidade fixa.
 
@@ -892,6 +895,13 @@ def _aplicar_subcategoria_e_visibilidade(doc, item, forma):
     saía na subcategoria padrão e visível. A API foi provada na sonda S6 da G0.
     A visibilidade dirigida por parâmetro continua vindo das associações.
     """
+    material = item.get(u"material")
+    if material and not any((a or {}).get(u"builtin") == u"MATERIAL_ID_PARAM"
+                            for a in (item.get(u"associacoes") or {}).values()):
+        try:
+            forma.get_Parameter(BuiltInParameter.MATERIAL_ID_PARAM).Set(_material_por_nome(doc, material))
+        except Exception as erro:
+            _pular(u"material '{0}' da forma #{1}".format(material, item[u"indice"]), unicode(erro)[:140])  # noqa: F821
     nome = item.get(u"subcategoria")
     if nome:
         try:
@@ -1237,6 +1247,25 @@ def _nomes_de_comprimento(especificacao):
     return nomes
 
 
+_MATERIAIS_DO_SPEC = {}
+
+
+def _material_por_nome(doc, nome):
+    u"""Material do destino com esse nome; criado (com a cor da origem) se faltar."""
+    from Autodesk.Revit.DB import Color, Material
+    for material in FilteredElementCollector(doc).OfClass(Material).ToElements():
+        if material.Name == nome:
+            return material.Id
+    novo = doc.GetElement(Material.Create(doc, nome))
+    definicao = _MATERIAIS_DO_SPEC.get(nome) or {}
+    cor = definicao.get(u"cor")
+    if cor:
+        novo.Color = Color(cor[0], cor[1], cor[2])
+    if definicao.get(u"transparencia"):
+        novo.Transparency = int(definicao[u"transparencia"])
+    return novo.Id
+
+
 def _aplicar_valores_do_tipo(gerenciador, tipo, parametros, de_comprimento):
     u"""Aplica os valores de um tipo ao tipo CORRENTE (mm -> interno).
 
@@ -1287,8 +1316,10 @@ def _aplicar_valores_do_tipo(gerenciador, tipo, parametros, de_comprimento):
                                type(valor).__name__))
             elif armazenamento == StorageType.String:
                 gerenciador.Set(parametro, unicode(valor))  # noqa: F821
+            elif isinstance(valor, dict) and valor.get(u"material"):
+                gerenciador.Set(parametro, _material_por_nome(_DOC_EM_CONSTRUCAO[0], valor[u"material"]))
             else:
-                # StorageType.ElementId (Material, Imagem...)
+                # StorageType.ElementId (Imagem, outro elemento...)
                 _pular(u"valor '{0}' do tipo '{1}'".format(nome, tipo[u"nome"]),
                        u"referência a elemento (id não atravessa documentos); "
                        u"transporte por nome fica para a fase de materiais")
@@ -1442,6 +1473,9 @@ def principal():
 
     app = _obter_app()
     doc = app.NewFamilyDocument(template)
+    _DOC_EM_CONSTRUCAO[0] = doc
+    _MATERIAIS_DO_SPEC.clear()
+    _MATERIAIS_DO_SPEC.update(especificacao.get(u"materiais") or {})
 
     transacao = Transaction(doc, u"RFADG — reconstruir família")
     transacao.Start()

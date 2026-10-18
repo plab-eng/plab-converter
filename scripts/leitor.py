@@ -119,6 +119,28 @@ def ler_identidade(doc):
 # Parâmetros e tipos
 # --------------------------------------------------------------------------
 
+# Documento em leitura (para resolver material por id) e materiais vistos.
+_DOC = [None]
+_MATERIAIS = {}
+
+
+def _material(identificador):
+    u"""ElementId de material -> {"material": nome}, registrando a definição."""
+    doc = _DOC[0]
+    elemento = doc.GetElement(identificador) if doc is not None and identificador is not None else None
+    if elemento is None or type(elemento).__name__ != "Material":
+        return None
+    nome = rfaspec.para_unicode(elemento.Name)
+    if nome not in _MATERIAIS:
+        cor = elemento.Color
+        _MATERIAIS[nome] = {
+            # Color.Red etc. são System.Byte: int() para o JSON.
+            u"cor": [int(cor.Red), int(cor.Green), int(cor.Blue)] if cor is not None and cor.IsValid else None,
+            u"transparencia": int(elemento.Transparency),
+        }
+    return {u"material": nome}
+
+
 def _valor_do_tipo(tipo_familia, parametro_familia):
     u"""Valor de um parâmetro num tipo, sem trocar o tipo corrente.
 
@@ -145,6 +167,10 @@ def _valor_do_tipo(tipo_familia, parametro_familia):
         return tipo_familia.AsString(parametro_familia)
     if armazenamento == StorageType.ElementId:
         identificador = tipo_familia.AsElementId(parametro_familia)
+        # Material atravessa documentos pelo NOME (o id não atravessa).
+        material = _material(identificador)
+        if material is not None:
+            return material
         return _id_valor(identificador) if identificador is not None else None
     return None
 
@@ -422,7 +448,10 @@ def ler_formas(doc):
             continue
 
         subcategoria = elemento.Subcategory
+        parametro_material = elemento.get_Parameter(BuiltInParameter.MATERIAL_ID_PARAM)
+        material_fixo = _material(parametro_material.AsElementId()) if parametro_material is not None else None
         registro.update({
+            u"material": material_fixo[u"material"] if material_fixo else None,
             u"indice": indice,
             u"solido": bool(elemento.IsSolid),
             u"visivel": bool(elemento.Visible),
@@ -987,6 +1016,8 @@ def extrair(doc):
             u"O documento aberto não é uma família. Recebido: {0}".format(doc.Title)
         )
 
+    _DOC[0] = doc
+    _MATERIAIS.clear()
     parametros, tipos = ler_parametros(doc)
     planos = ler_planos_de_referencia(doc)  # antes das cotas: define os endereços
     formas, indice_por_id, lacunas_de_forma, curvas_de_esboco = ler_formas(doc)
@@ -1025,6 +1056,7 @@ def extrair(doc):
         u"combinacoes": combinacoes,
         u"conectores": conectores,
         u"tabelas_de_consulta": tabelas,
+        u"materiais": dict(_MATERIAIS),
         # Assinatura geométrica da origem, tipo a tipo. É contra ISTO que o
         # validador compara no destino — assim ele não precisa saber nada
         # sobre a geometria da família, só se ela reproduz a mesma coisa.
