@@ -324,6 +324,51 @@ def construir_parametros(doc, especificacao):
     return mapa
 
 
+def _csv_com_aspas_escapadas(conteudo):
+    u"""Campo com aspa vai entre aspas, com a aspa interna dobrada.
+
+    O Revit exporta bitola em polegada sem escapar (`1"`, `3/4"`) e, na volta,
+    lê a aspa como delimitador: "IncorrectNumberOfColumns" na tabela da
+    Solaris. Campo sem aspa fica byte a byte como veio.
+    """
+    linhas = []
+    for linha in conteudo.split(u"\n"):
+        fim = u"\r" if linha.endswith(u"\r") else u""
+        campos = linha[:-1].split(u",") if fim else linha.split(u",")
+        campos = [u'"' + c.replace(u'"', u'""') + u'"' if u'"' in c else c for c in campos]
+        linhas.append(u",".join(campos) + fim)
+    return u"\n".join(linhas)
+
+
+def importar_tabelas_de_consulta(doc, especificacao):
+    u"""Regrava cada CSV com os bytes da origem e importa (antes das fórmulas).
+
+    ImportSizeTable usa o nome do ARQUIVO como nome da tabela, então cada uma
+    vai para uma pasta própria com o nome exato.
+    """
+    tabelas = especificacao.get(u"tabelas_de_consulta") or []
+    if not tabelas:
+        return
+    import tempfile
+    from Autodesk.Revit.DB import FamilySizeTableErrorInfo, FamilySizeTableManager
+    gerenciador = FamilySizeTableManager.GetFamilySizeTableManager(doc, doc.OwnerFamily.Id)
+    if gerenciador is None:
+        FamilySizeTableManager.CreateFamilySizeTableManager(doc, doc.OwnerFamily.Id)
+        gerenciador = FamilySizeTableManager.GetFamilySizeTableManager(doc, doc.OwnerFamily.Id)
+    for tabela in tabelas:
+        pasta = tempfile.mkdtemp(prefix=u"rfadg_importar_")
+        caminho = os.path.join(pasta, tabela[u"nome"] + u".csv")
+        try:
+            with open(caminho, "wb") as arquivo:
+                arquivo.write(_csv_com_aspas_escapadas(tabela[u"conteudo"]))
+            erro_info = FamilySizeTableErrorInfo()
+            if not gerenciador.ImportSizeTable(doc, caminho, erro_info):
+                _pular(u"tabela de consulta '{0}'".format(tabela[u"nome"]),
+                       u"ImportSizeTable recusou: {0}".format(erro_info.FamilySizeTableErrorType))
+        except Exception as erro:
+            _pular(u"tabela de consulta '{0}'".format(tabela[u"nome"]), unicode(erro)[:140])  # noqa: F821
+
+
 def aplicar_formulas(doc, especificacao, parametros):
     u"""Aplica as fórmulas. Precisa rodar DEPOIS de existir pelo menos um tipo.
 
@@ -457,6 +502,11 @@ def _curva_do_spec(item):
         return Line.CreateBound(_xyz(item[u"inicio"]), _xyz(item[u"fim"]))
     if item[u"tipo"] == u"arco":
         return Arc.Create(_xyz(item[u"inicio"]), _xyz(item[u"fim"]), _xyz(item[u"meio"]))
+    if item[u"tipo"] == u"elipse":
+        from Autodesk.Revit.DB import Ellipse
+        return Ellipse.CreateCurve(_xyz(item[u"centro"]), mm(item[u"raio_x"]), mm(item[u"raio_y"]),
+                                   _vetor(item[u"eixo_x"]), _vetor(item[u"eixo_y"]),
+                                   item[u"parametro_inicial"], item[u"parametro_final"])
     raise ValueError(u"Curva fora da cobertura: {0}".format(item[u"tipo"]))
 
 
@@ -1372,7 +1422,9 @@ def principal():
         construir_combinacoes(doc, especificacao, formas)
         construir_tipos(doc, especificacao, parametros, tipo_corrente)
         aplicar_imagem_do_tipo(doc, especificacao)
-        # Fórmulas por último: exigem um tipo válido já existente.
+        # Fórmulas por último: exigem um tipo válido já existente. As tabelas de
+        # consulta entram antes delas, que é onde size_lookup procura.
+        importar_tabelas_de_consulta(doc, especificacao)
         aplicar_formulas(doc, especificacao, parametros)
         # Salva na mesma configuração da origem, para o diff de FamilySpec
         # comparar coordenadas maçã com maçã.

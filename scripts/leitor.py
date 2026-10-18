@@ -298,6 +298,19 @@ def _curva_para_dicionario(curva):
             u"fim": _ponto(curva.GetEndPoint(1)),
             u"meio": _ponto(curva.Evaluate(0.5, True)),
         }
+    if type(curva).__name__ == "Ellipse":
+        # Tampa abaulada de reservatório (Solaris): meia elipse no perfil da
+        # revolução. Raios em mm, direções adimensionais, parâmetros em radianos.
+        return {
+            u"tipo": u"elipse",
+            u"centro": _ponto(curva.Center),
+            u"raio_x": para_mm(curva.RadiusX),
+            u"raio_y": para_mm(curva.RadiusY),
+            u"eixo_x": _vetor(curva.XDirection),
+            u"eixo_y": _vetor(curva.YDirection),
+            u"parametro_inicial": curva.GetEndParameter(0),
+            u"parametro_final": curva.GetEndParameter(1),
+        }
     # Falha em voz alta: uma curva silenciosamente ignorada vira família errada.
     # Quem chama isola a forma e transforma isto em lacuna — famílias reais têm
     # splines e elipses, e perder a forma inteira com registro é honesto;
@@ -914,6 +927,36 @@ def ler_conectores(doc, indice_por_id):
     return conectores, lacunas
 
 
+def ler_tabelas_de_consulta(doc):
+    u"""Tabelas de consulta (size_lookup) embutidas, com o CSV BYTE A BYTE.
+
+    O conteúdo vai como texto de semântica latin-1 (unichr(ord(byte))), sem
+    codec: o CSV exportado pelo Revit pode vir em qualquer codificação, e o
+    construtor regrava os mesmos bytes. Sem as tabelas, toda fórmula
+    size_lookup cai no destino (35 na Solaris, 3 a 5 por conexão Ultrapex).
+    """
+    import tempfile
+    from Autodesk.Revit.DB import FamilySizeTableManager
+    gerenciador = FamilySizeTableManager.GetFamilySizeTableManager(doc, doc.OwnerFamily.Id)
+    if gerenciador is None:
+        return [], []
+    tabelas, lacunas = [], []
+    pasta = tempfile.mkdtemp(prefix=u"rfadg_tabelas_")
+    for nome in gerenciador.GetAllSizeTableNames():
+        caminho = os.path.join(pasta, u"tabela.csv")
+        try:
+            if not gerenciador.ExportSizeTable(nome, caminho):
+                raise ValueError(u"ExportSizeTable devolveu falso")
+            with open(caminho, "rb") as arquivo:
+                bruto = arquivo.read()
+            tabelas.append({u"nome": rfaspec.para_unicode(nome),
+                            u"conteudo": u"".join([unichr(ord(c)) for c in bruto])})  # noqa: F821
+        except Exception as erro:
+            lacunas.append({u"motivo": u"tabela de consulta '{0}' não exportada: {1}".format(
+                rfaspec.para_unicode(nome), rfaspec.para_unicode(unicode(erro))[:120])})  # noqa: F821
+    return tabelas, lacunas
+
+
 def _tipo_de_peca(doc):
     parametro = doc.OwnerFamily.get_Parameter(BuiltInParameter.FAMILY_CONTENT_PART_TYPE)
     if parametro is None:
@@ -939,7 +982,8 @@ def extrair(doc):
                     for cota in cotas for endereco in cota[u"referencias"])
     combinacoes, lacunas_de_corte = ler_combinacoes(doc, indice_por_id)
     conectores, lacunas_de_conector = ler_conectores(doc, indice_por_id)
-    lacunas = lacunas_de_forma + lacunas + lacunas_de_corte + lacunas_de_conector
+    tabelas, lacunas_de_tabela = ler_tabelas_de_consulta(doc)
+    lacunas = lacunas_de_forma + lacunas + lacunas_de_corte + lacunas_de_conector + lacunas_de_tabela
     identidade = ler_identidade(doc)
     identidade[u"part_type"] = _tipo_de_peca(doc)
     if conectores:
@@ -966,6 +1010,7 @@ def extrair(doc):
         u"alinhamentos": alinhamentos,
         u"combinacoes": combinacoes,
         u"conectores": conectores,
+        u"tabelas_de_consulta": tabelas,
         # Assinatura geométrica da origem, tipo a tipo. É contra ISTO que o
         # validador compara no destino — assim ele não precisa saber nada
         # sobre a geometria da família, só se ela reproduz a mesma coisa.
