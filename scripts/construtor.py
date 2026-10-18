@@ -980,7 +980,37 @@ def aplicar_tipo_de_peca(doc, especificacao):
         _pular(u"part type '{0}'".format(nome), unicode(erro)[:140])  # noqa: F821
 
 
-def construir_conectores(doc, especificacao, formas, parametros):
+def _associar_raio_pelo_diametro(doc, conector, alvo_raio, nome_raio, parametros):
+    u"""Raio do conector dirigindo um parâmetro (família de roteamento).
+
+    Sonda S10: em conector de tubo criado pela API o RAIO não pode ser associado
+    a nada (CanElementParameterBeAssociated = False); o DIÂMETRO pode. Adaptação
+    que preserva o comportamento: um parâmetro '<raio>_D' recebe o diâmetro do
+    conector e o raio vira fórmula '<raio>_D / 2'. O tamanho continua vindo do
+    tubo. Fica no relatório como adaptação, não como cópia literal.
+    """
+    gerenciador = doc.FamilyManager
+    nome_d = nome_raio + u"_D"
+    alvo_d = parametros.get(nome_d)
+    if alvo_d is None:
+        alvo_d = gerenciador.AddParameter(nome_d, alvo_raio.Definition.GetGroupTypeId(),
+                                          alvo_raio.Definition.GetDataType(), alvo_raio.IsInstance)
+        parametros[nome_d] = alvo_d
+        try:
+            if alvo_raio.Formula is None:
+                # O diâmetro nasce com o valor atual (2 x raio): a fórmula não
+                # pode zerar a geometria já construída.
+                gerenciador.Set(alvo_d, 2 * gerenciador.CurrentType.AsDouble(alvo_raio))
+                gerenciador.SetFormula(alvo_raio, u"{0} / 2".format(nome_d))
+        except Exception as erro:
+            _pular(u"fórmula de '{0}'".format(nome_raio), unicode(erro)[:140])  # noqa: F821
+    gerenciador.AssociateElementParameterToFamilyParameter(
+        conector.get_Parameter(BuiltInParameter.CONNECTOR_DIAMETER), alvo_d)
+    _pular(u"raio do conector -> '{0}'".format(nome_raio),
+           u"adaptado: a API não associa o raio; diâmetro -> '{0}' e '{1}' = '{0}' / 2".format(nome_d, nome_raio))
+
+
+def construir_conectores(doc, especificacao, formas, parametros, planos=None):
     u"""Conectores de tubo nas faces planas (schema 0.3.0; sonda S9 da G5).
 
     Diâmetro: associado ao parâmetro do rótulo, ou fixado no valor do spec.
@@ -995,21 +1025,29 @@ def construir_conectores(doc, especificacao, formas, parametros):
         if item.get(u"dominio") != u"tubo":
             _pular(rotulo, u"domínio fora da cobertura: {0}".format(item.get(u"dominio")))
             continue
-        forma = formas.get(item[u"face"][u"forma"])
-        face = _face_por_endereco(forma, item[u"face"]) if forma is not None else None
-        if face is None:
-            _pular(rotulo, u"face hospedeira não reencontrada")
+        if item[u"face"].get(u"plano"):
+            plano = (planos or {}).get(item[u"face"][u"plano"])
+            referencia_hospedeira = plano.GetReference() if plano is not None else None
+        else:
+            forma = formas.get(item[u"face"][u"forma"])
+            face = _face_por_endereco(forma, item[u"face"]) if forma is not None else None
+            referencia_hospedeira = face.Reference if face is not None else None
+        if referencia_hospedeira is None:
+            _pular(rotulo, u"face ou plano hospedeiro não reencontrado")
             continue
         sistema = getattr(PipeSystemType, item.get(u"sistema") or u"Fitting", None)
         if sistema is None:
             _pular(rotulo, u"sistema '{0}' não existe; usado Fitting".format(item.get(u"sistema")))
             sistema = PipeSystemType.Fitting
         try:
-            conector = DB.ConnectorElement.CreatePipeConnector(doc, sistema, face.Reference)
+            conector = DB.ConnectorElement.CreatePipeConnector(doc, sistema, referencia_hospedeira)
             diametro = conector.get_Parameter(BuiltInParameter.CONNECTOR_DIAMETER)
             alvo = parametros.get(item.get(u"diametro_rotulo") or u"")
+            alvo_raio = parametros.get(item.get(u"raio_rotulo") or u"")
             if alvo is not None:
                 gerenciador.AssociateElementParameterToFamilyParameter(diametro, alvo)
+            elif alvo_raio is not None:
+                _associar_raio_pelo_diametro(doc, conector, alvo_raio, item[u"raio_rotulo"], parametros)
             elif item.get(u"diametro_mm"):
                 diametro.Set(mm(item[u"diametro_mm"]))
             criados[indice] = conector
@@ -1217,6 +1255,15 @@ def _aplicar_valores_do_tipo(gerenciador, tipo, parametros, de_comprimento):
         if valor is None:
             continue
         parametro = parametros.get(nome)
+        if parametro is not None and parametro.IsDeterminedByFormula and \
+                parametros.get(nome + u"_D") is not None and isinstance(valor, (int, long, float)):  # noqa: F821
+            # Raio adaptado (ver _associar_raio_pelo_diametro): o valor do tipo
+            # vai para o diâmetro que dirige o raio.
+            try:
+                gerenciador.Set(parametros[nome + u"_D"], mm(2 * valor) if nome in de_comprimento else 2 * valor)
+            except Exception as erro:
+                _pular(u"valor '{0}' do tipo '{1}'".format(nome, tipo[u"nome"]), unicode(erro)[:140])  # noqa: F821
+            continue
         if parametro is None or parametro.IsDeterminedByFormula:
             continue
 
@@ -1418,7 +1465,7 @@ def principal():
         formas = construir_formas(doc, vista, especificacao, planos, parametros)
         construir_cotas_radiais(doc, vista, especificacao, formas, parametros)
         aplicar_tipo_de_peca(doc, especificacao)
-        construir_conectores(doc, especificacao, formas, parametros)
+        construir_conectores(doc, especificacao, formas, parametros, planos)
         construir_combinacoes(doc, especificacao, formas)
         construir_tipos(doc, especificacao, parametros, tipo_corrente)
         aplicar_imagem_do_tipo(doc, especificacao)

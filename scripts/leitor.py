@@ -886,6 +886,15 @@ def _face_do_conector(doc, conector, indice_por_id):
                 projecao = face.Project(origem)
                 if projecao is not None and projecao.Distance < 1e-6:
                     return {u"forma": indice, u"normal": _vetor(face.FaceNormal)}
+    # Conector hospedado num PLANO de referência (tê da Ultrapex: nenhuma face
+    # passa pela origem dos 3 conectores; cada um coincide com um plano).
+    for plano in FilteredElementCollector(doc).OfClass(ReferencePlane).ToElements():
+        if abs(abs(plano.Normal.DotProduct(direcao)) - 1.0) > 1e-6:
+            continue
+        if abs((origem - plano.BubbleEnd).DotProduct(plano.Normal)) < 1e-6:
+            endereco = _ENDERECO_DO_PLANO.get(_id_valor(plano.Id))
+            if endereco:
+                return {u"plano": endereco, u"normal": _vetor(direcao), u"origem": _ponto(origem)}
     return None
 
 
@@ -909,6 +918,10 @@ def ler_conectores(doc, indice_por_id):
             continue
         diametro = conector.get_Parameter(BuiltInParameter.CONNECTOR_DIAMETER)
         associado = gerenciador.GetAssociatedFamilyParameter(diametro) if diametro is not None else None
+        # Família de roteamento (Ultrapex): o RAIO do conector dirige o RN, e o
+        # tamanho da peça vem do tubo conectado.
+        raio = conector.get_Parameter(BuiltInParameter.CONNECTOR_RADIUS)
+        associado_raio = gerenciador.GetAssociatedFamilyParameter(raio) if raio is not None else None
         ligado = None
         try:
             outro = conector.GetLinkedConnectorElement()
@@ -922,6 +935,7 @@ def ler_conectores(doc, indice_por_id):
             u"face": face,
             u"diametro_mm": rfaspec.interno_para_mm(2 * conector.Radius),
             u"diametro_rotulo": associado.Definition.Name if associado is not None else None,
+            u"raio_rotulo": associado_raio.Definition.Name if associado_raio is not None else None,
             u"ligado_a": ligado,
         })
     return conectores, lacunas
