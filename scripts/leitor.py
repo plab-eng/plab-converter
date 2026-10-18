@@ -122,6 +122,36 @@ def ler_identidade(doc):
 # Documento em leitura (para resolver material por id) e materiais vistos.
 _DOC = [None]
 _MATERIAIS = {}
+_IMAGENS = {}
+
+
+def _imagem(identificador):
+    u"""ElementId de ImageType -> {"imagem": nome}, guardando o PNG em base64.
+
+    A Type Image é um elemento do documento (o id não atravessa). Vai pelos
+    BYTES da imagem: ImageType.GetImage() -> Bitmap -> PNG.
+    """
+    doc = _DOC[0]
+    elemento = doc.GetElement(identificador) if doc is not None and identificador is not None else None
+    if elemento is None or type(elemento).__name__ != "ImageType":
+        return None
+    # ImageType.Name não é acessível no IronPython (como FamilySymbol.Name).
+    from Autodesk.Revit.DB import Element
+    nome = rfaspec.para_unicode(Element.Name.__get__(elemento))
+    if nome not in _IMAGENS:
+        import base64
+        import tempfile
+        import clr
+        clr.AddReference("System.Drawing")
+        from System.Drawing.Imaging import ImageFormat
+        # No formato do nome original: o PNG de um JPG de 1 MB passava de 4 MB.
+        extensao = os.path.splitext(nome)[1].lower()
+        formato = ImageFormat.Jpeg if extensao in (u".jpg", u".jpeg") else             ImageFormat.Bmp if extensao == u".bmp" else ImageFormat.Png
+        caminho = os.path.join(tempfile.mkdtemp(prefix=u"rfadg_img_"), u"imagem" + (extensao or u".png"))
+        elemento.GetImage().Save(caminho, formato)
+        with open(caminho, "rb") as arquivo:
+            _IMAGENS[nome] = base64.b64encode(arquivo.read())
+    return {u"imagem": nome}
 
 
 def _material(identificador):
@@ -171,6 +201,12 @@ def _valor_do_tipo(tipo_familia, parametro_familia):
         material = _material(identificador)
         if material is not None:
             return material
+        try:
+            imagem = _imagem(identificador)
+        except Exception:
+            imagem = None
+        if imagem is not None:
+            return imagem
         return _id_valor(identificador) if identificador is not None else None
     return None
 
@@ -201,7 +237,18 @@ def ler_parametros(doc):
             except Exception:
                 pass
 
+        # Parâmetro embutido da categoria (Loss Method, K Coefficient Table nas
+        # conexões de tubo): o nome é traduzido conforme o idioma do Revit, o
+        # BuiltInParameter não. O construtor casa por ele.
+        embutido = None
+        try:
+            if parametro.Id is not None and _id_valor(parametro.Id) < 0:
+                embutido = str(definicao.BuiltInParameter)
+        except Exception:
+            embutido = None
+
         parametros.append({
+            u"embutido": embutido,
             u"nome": definicao.Name,
             u"tipo_de_dado": _forge_id(definicao.GetDataType()),
             u"grupo": _grupo_do_parametro(definicao),
@@ -1069,6 +1116,7 @@ def extrair(doc):
 
     _DOC[0] = doc
     _MATERIAIS.clear()
+    _IMAGENS.clear()
     parametros, tipos = ler_parametros(doc)
     planos = ler_planos_de_referencia(doc)  # antes das cotas: define os endereços
     formas, indice_por_id, lacunas_de_forma, curvas_de_esboco = ler_formas(doc)
@@ -1108,6 +1156,7 @@ def extrair(doc):
         u"conectores": conectores,
         u"tabelas_de_consulta": tabelas,
         u"materiais": dict(_MATERIAIS),
+        u"imagens": dict(_IMAGENS),
         # Assinatura geométrica da origem, tipo a tipo. É contra ISTO que o
         # validador compara no destino — assim ele não precisa saber nada
         # sobre a geometria da família, só se ela reproduz a mesma coisa.

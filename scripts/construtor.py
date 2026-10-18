@@ -87,6 +87,17 @@ def _pular(o_que, motivo):
     log(u"NÃO REPRODUZIDO: {0} — {1}".format(o_que, motivo))
 
 
+# Adaptação: o item EXISTE no destino com o mesmo comportamento, por outro
+# caminho que a API exige (raio do conector pelo diâmetro, nome de tipo " ").
+# Vai para o relatório, separado do que não foi reproduzido.
+_ADAPTADO = []
+
+
+def _adaptar(o_que, como):
+    _ADAPTADO.append({u"item": o_que, u"como": como})
+    log(u"ADAPTADO: {0} — {1}".format(o_que, como))
+
+
 # --------------------------------------------------------------------------
 # 1. Parâmetros
 # --------------------------------------------------------------------------
@@ -136,6 +147,8 @@ def _montar_tipos_de_dado():
         (u"autodesk.spec.measurable:currency", u"Currency"),
         (u"autodesk.spec.reference:image", u"Reference.Image"),
         (u"autodesk.spec.aec.piping:pipeSize", u"PipeSize"),
+        # Comprimento de folha (OffsetHeight/OffsetWidth da luva de redução).
+        (u"autodesk.spec.aec:sheetLength", u"SheetLength"),
         (u"autodesk.spec.aec.piping:flow", u"Flow"),
         (u"autodesk.spec.aec.piping:temperature", u"PipingTemperature"),
         (u"autodesk.spec.aec.electrical:frequency", u"ElectricalFrequency"),
@@ -294,6 +307,24 @@ def construir_parametros(doc, especificacao):
             nome = item[u"nome"]
             if nome in existentes:
                 continue  # builtin do template, nada a criar
+            if item.get(u"embutido") and item[u"embutido"] != u"INVALID":
+                # Parâmetro da categoria, com nome traduzido no destino: o
+                # mesmo BuiltInParameter, achado pelo id, responde pelo nome
+                # da origem (rótulos, fórmulas e valores seguem funcionando).
+                achado = None
+                for existente in gerenciador.Parameters:
+                    try:
+                        if str(existente.Definition.BuiltInParameter) == item[u"embutido"]:
+                            achado = existente
+                            break
+                    except Exception:
+                        pass
+                if achado is not None:
+                    mapa[nome] = achado
+                else:
+                    _pular(u"parâmetro '{0}'".format(nome),
+                           u"embutido {0} não existe no destino (categoria?)".format(item[u"embutido"]))
+                continue
 
             tipo_de_dado = _TIPOS_DE_DADO.get(
                 rfaspec.especie_forge(item.get(u"tipo_de_dado")))
@@ -1263,8 +1294,8 @@ def _associar_raio_pelo_diametro(doc, conector, alvo_raio, nome_raio, parametros
             _pular(u"fórmula de '{0}'".format(nome_raio), unicode(erro)[:140])  # noqa: F821
     gerenciador.AssociateElementParameterToFamilyParameter(
         conector.get_Parameter(BuiltInParameter.CONNECTOR_DIAMETER), alvo_d)
-    _pular(u"raio do conector -> '{0}'".format(nome_raio),
-           u"adaptado: a API não associa o raio; diâmetro -> '{0}' e '{1}' = '{0}' / 2".format(nome_d, nome_raio))
+    _adaptar(u"raio do conector -> '{0}'".format(nome_raio),
+           u"a API não associa o raio; diâmetro -> '{0}' e '{1}' = '{0}' / 2".format(nome_d, nome_raio))
 
 
 def _face_de_apoio_no_plano(doc, plano, face_spec):
@@ -1537,6 +1568,33 @@ def _nomes_de_comprimento(especificacao):
 _MATERIAIS_DO_SPEC = {}
 
 
+_IMAGENS_DO_SPEC = {}
+_IMAGENS_CRIADAS = {}
+
+
+def _imagem_por_nome(doc, nome):
+    u"""ImageType do destino com os bytes da origem (spec `imagens`)."""
+    if nome in _IMAGENS_CRIADAS:
+        return _IMAGENS_CRIADAS[nome]
+    dados = _IMAGENS_DO_SPEC.get(nome)
+    if not dados:
+        raise ValueError(u"imagem '{0}' sem bytes no spec".format(nome))
+    import base64
+    import tempfile
+    import Autodesk.Revit.DB as DB
+    pasta = tempfile.mkdtemp(prefix=u"rfadg_img_")
+    # O nome do arquivo vira o nome do ImageType: o mesmo da origem.
+    seguro = u"".join(c if c.isalnum() or c in u" ._-()" else u"_" for c in nome) or u"imagem"
+    if not os.path.splitext(seguro)[1]:
+        seguro += u".png"
+    caminho = os.path.join(pasta, seguro)
+    with open(caminho, "wb") as arquivo:
+        arquivo.write(base64.b64decode(dados))
+    imagem = DB.ImageType.Create(doc, DB.ImageTypeOptions(caminho, False, DB.ImageTypeSource.Import))
+    _IMAGENS_CRIADAS[nome] = imagem.Id
+    return imagem.Id
+
+
 def _material_por_nome(doc, nome):
     u"""Material do destino com esse nome; criado (com a cor da origem) se faltar."""
     from Autodesk.Revit.DB import Color, Material
@@ -1605,6 +1663,8 @@ def _aplicar_valores_do_tipo(gerenciador, tipo, parametros, de_comprimento):
                 gerenciador.Set(parametro, unicode(valor))  # noqa: F821
             elif isinstance(valor, dict) and valor.get(u"material"):
                 gerenciador.Set(parametro, _material_por_nome(_DOC_EM_CONSTRUCAO[0], valor[u"material"]))
+            elif isinstance(valor, dict) and valor.get(u"imagem"):
+                gerenciador.Set(parametro, _imagem_por_nome(_DOC_EM_CONSTRUCAO[0], valor[u"imagem"]))
             else:
                 # StorageType.ElementId (Imagem, outro elemento...)
                 _pular(u"valor '{0}' do tipo '{1}'".format(nome, tipo[u"nome"]),
@@ -1653,20 +1713,34 @@ def estabelecer_tipo_corrente(doc, especificacao, parametros):
                u"'{0}'".format(tipo[u"nome"]))
 
     gerenciador = doc.FamilyManager
+    original = tipo[u"nome"]
     if not (tipo[u"nome"] or u"").strip():
         # Caso real (famílias de roteamento da Ultrapex): o único tipo se chama
         # " ". O Revit deixa existir, mas a API recusa criar ("The value cannot
-        # be empty"). Sem tipo corrente nada mais é construído, então ele nasce
-        # com nome legível e a troca vai para o relatório.
-        _pular(u"nome do tipo {0!r}".format(tipo[u"nome"]),
-               u"a API recusa nome vazio; criado como 'Padrao'")
+        # be empty"). Sonda S14: o Revit apara U+00A0, U+2007, U+202F e
+        # U+3000, mas aceita o "Braille em branco" (U+2800), que aparece como
+        # um espaço. Se até ele for recusado, nasce "Padrao".
         tipo = dict(tipo)
-        tipo[u"nome"] = u"Padrao"
+        tipo[u"nome"] = unichr(0x2800) * max(1, len(original or u""))  # noqa: F821
+        try:
+            gerenciador.NewType(tipo[u"nome"])
+            _adaptar(u"nome do tipo {0!r}".format(original), u"Braille em branco (U+2800), aparece como espaço")
+        except Exception:
+            tipo[u"nome"] = u"Padrao"
+            gerenciador.NewType(tipo[u"nome"])
+            _pular(u"nome do tipo {0!r}".format(original), u"a API recusa nome vazio; criado como 'Padrao'")
+        _NOME_NO_DESTINO[original] = tipo[u"nome"]
+        _aplicar_valores_do_tipo(gerenciador, tipo, parametros, _nomes_de_comprimento(especificacao))
+        doc.Regenerate()
+        return tipo[u"nome"]
     gerenciador.NewType(tipo[u"nome"])  # vira o tipo corrente
     _aplicar_valores_do_tipo(gerenciador, tipo, parametros,
                              _nomes_de_comprimento(especificacao))
     doc.Regenerate()
     return tipo[u"nome"]
+
+
+_NOME_NO_DESTINO = {}
 
 
 def construir_tipos(doc, especificacao, parametros, ja_criado=None):
@@ -1680,7 +1754,7 @@ def construir_tipos(doc, especificacao, parametros, ja_criado=None):
     de_comprimento = _nomes_de_comprimento(especificacao)
 
     for tipo in especificacao[u"tipos"]:
-        if tipo[u"nome"] == ja_criado:
+        if tipo[u"nome"] == ja_criado or tipo[u"nome"] in _NOME_NO_DESTINO:
             continue
 
         # Um tipo ruim não pode derrubar a família inteira. Caso real do
@@ -1763,6 +1837,9 @@ def principal():
     _DOC_EM_CONSTRUCAO[0] = doc
     _MATERIAIS_DO_SPEC.clear()
     _MATERIAIS_DO_SPEC.update(especificacao.get(u"materiais") or {})
+    _IMAGENS_DO_SPEC.clear()
+    _IMAGENS_DO_SPEC.update(especificacao.get(u"imagens") or {})
+    _IMAGENS_CRIADAS.clear()
 
     transacao = Transaction(doc, u"RFADG — reconstruir família")
     transacao.Start()
@@ -1772,6 +1849,9 @@ def principal():
         # Categoria antes de tudo: trocá-la depois de existir geometria e
         # parâmetros é bem mais arriscado.
         ajustar_categoria(doc, especificacao)
+        # Part Type antes dos parâmetros: os embutidos de Transição (Offset
+        # Width/Height da luva de redução) só passam a existir depois dele.
+        aplicar_tipo_de_peca(doc, especificacao)
 
         parametros = construir_parametros(doc, especificacao)
         # Tipo corrente da origem PRIMEIRO: a geometria do spec foi
@@ -1821,6 +1901,7 @@ def principal():
     if relatorio:
         rfaspec.gravar_json(relatorio, {
             u"nao_reproduzido": _NAO_REPRODUZIDO,
+            u"adaptado": _ADAPTADO,
             u"lacunas_da_origem": especificacao.get(u"lacunas", []),
         })
 

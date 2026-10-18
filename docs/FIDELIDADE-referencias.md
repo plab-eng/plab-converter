@@ -34,6 +34,7 @@ aninhadas; travas de linha de esboço.
 | 6. Materiais por nome | 6 | 7 | 8 | 10 | 8 |
 | S11 + S12. Travas de esboço, EQ, conector em plano | **6** · **7 de 7 tipos exatos** | **8** · 7/7 travas | **8** | **10** | **8** · conectores 3/3 |
 | S13. Cota radial na vista do esboço, cota angular | **0** · cotas rotuladas 26/26 | **7** | **7** · cotas 2/2 | **9** · cotas 2/2 | **8** |
+| S14. Embutidos pelo BuiltInParameter, Type Image, nome " ", sheetLength | **0** | **0** | **0** | **0** | **0** |
 
 Geometria própria da Ultrapex: **igual** (0,0% em extensão e volume) nas 4. Conectores: 2 → 2 no joelho e nas
 luvas, 3 → 3 no tê. A Solaris sai com extensão e volume iguais nos 7 tipos (200 a 1000 L).
@@ -42,8 +43,30 @@ A Solaris não tem mais nenhum item não reproduzido. Os 6 que sobravam ("One of
 was not satisfied") eram cotas de diâmetro e de raio em esboços verticais (bocais, no plano de normal X), que o
 construtor criava sempre na planta. Agora nascem na vista paralela ao esboço, e o arco é casado pela geometria.
 As 2 cotas radiais sem rótulo e sem trava são só anotação e ficam de fora de propósito: criá-las desfazia as
-travas das faces das formas 6 e 7 (+8 mm no comprimento). Os itens que restam nas conexões são os de sempre:
-parâmetros embutidos com nome traduzido (vão para a Rota B), a adaptação do raio e o tipo " ".
+travas das faces das formas 6 e 7 (+8 mm no comprimento). 
+
+**Conexões zeradas (S14, `scripts/s14_sonda_tipo_e_imagem.py`):**
+
+- Parâmetro embutido da categoria (Loss Method, K Coefficient Table, Offset Width/Height, Type Image): o leitor
+  grava o `BuiltInParameter` e o construtor usa o parâmetro embutido do destino, cujo nome vem traduzido no
+  Revit 2023 em português ("Tipo de imagem"...). Antes, o construtor criava uma **duplicata** de usuário com o
+  nome em inglês. Offset Width/Height só existem depois do Part Type "Transição", que passou a ser aplicado
+  antes dos parâmetros.
+- Type Image: vai pelos bytes da imagem (`ImageType.GetImage()`, salva no formato do nome original; JPG, e não
+  PNG, que inflava 4×) e é recriada no destino com o mesmo nome. Armadilha: `ImageType.Name` não é acessível no
+  IronPython, então o nome é lido por `Element.Name.__get__`.
+- Tipo de nome " ": o Revit apara U+00A0, U+2007, U+202F e U+3000, mas aceita U+2800 (Braille em branco), que
+  aparece como espaço.
+- `sheetLength` entrou na tabela de tipos de dado.
+
+**Adaptações** (ficam no relatório em `adaptado`, separadas do que não foi reproduzido): o raio do conector
+pelo diâmetro (limite da API, S10) e o nome " " como U+2800.
+
+**Efeito na família de teste do conversor:** o validador (régua da Rota B, intocado) passa a acusar 11
+parâmetros "AUSENTE". São os 11 embutidos, que existem no destino com o nome em português (conferido com
+`scripts/diag_parametros_embutidos.py`: mesmo BuiltInParameter, nenhuma duplicata). É a pendência
+"validador casar por BuiltInParameter", que fica com a sessão da Rota B. A bateria separa esses 11 das
+divergências reais (0).
 
 O que sobra em cada conexão Ultrapex: os 2 parâmetros embutidos de categoria com nome traduzido no Revit 2023
 em português ("Loss Method", "K Coefficient Table" — pendência com a Rota B: casar por `BuiltInParameter`),
