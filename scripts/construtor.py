@@ -22,6 +22,7 @@ O modelo da linha de comando é só a portadora que dá boot no Revit.
     pyrevit run scripts/construtor.py <portadora.rfa> --revit=2023
 """
 
+import math
 import os
 import re
 import sys
@@ -796,6 +797,80 @@ def _resolver_referencia(endereco, planos, formas):
         face = _face_por_endereco(elemento, endereco)
         return face.Reference if face is not None else None
 
+    if endereco[u"tipo"] == u"esboco":
+        curva = _curva_de_esboco(formas, endereco)
+        if curva is None:
+            return None
+        if endereco.get(u"ponta") is not None:
+            return curva.GetEndPointReference(_indice_da_ponta(curva, endereco))
+        return curva.Reference
+
+    return None
+
+
+def _curva_de_esboco(formas, endereco):
+    u"""Curva do esboço reencontrada pelas PONTAS (S11); laço/curva é o recurso.
+
+    O Revit recria o esboço com outra ordem e outro sentido de curvas: pelo
+    índice, a trava caía na curva errada ("not geometrically aligned").
+    """
+    elemento = formas.get(endereco[u"forma"])
+    if elemento is None:
+        return None
+    try:
+        lacos = [list(laco) for laco in elemento.Sketch.Profile]
+    except Exception:
+        return None
+    pontas = endereco.get(u"pontas_mm")
+    if pontas:
+        a, b = _xyz(pontas[0]), _xyz(pontas[1])
+        meio = _xyz(endereco[u"meio_mm"]) if endereco.get(u"meio_mm") else None
+        tolerancia = mm(0.01)
+        for laco in lacos:
+            for curva in laco:
+                p, q = curva.GetEndPoint(0), curva.GetEndPoint(1)
+                if not ((p.DistanceTo(a) < tolerancia and q.DistanceTo(b) < tolerancia) or
+                        (p.DistanceTo(b) < tolerancia and q.DistanceTo(a) < tolerancia)):
+                    continue
+                if meio is None or curva.Evaluate(0.5, True).DistanceTo(meio) < tolerancia:
+                    return curva
+        return None
+    try:
+        return lacos[endereco[u"laco"]][endereco[u"curva"]]
+    except Exception:
+        return None
+
+
+def _indice_da_ponta(curva, endereco):
+    u"""Ponta da curva no destino: a mais próxima do ponto gravado."""
+    if endereco.get(u"ponto_mm"):
+        alvo = _xyz(endereco[u"ponto_mm"])
+        return 0 if curva.GetEndPoint(0).DistanceTo(alvo) <= curva.GetEndPoint(1).DistanceTo(alvo) else 1
+    return int(endereco[u"ponta"])
+
+
+def _normal_do_esboco(formas, enderecos):
+    for endereco in enderecos:
+        if endereco[u"tipo"] == u"esboco" and endereco[u"forma"] in formas:
+            return formas[endereco[u"forma"]].Sketch.SketchPlane.GetPlane().Normal
+    return None
+
+
+def _vista_paralela_ao_esboco(doc, formas, enderecos, planta):
+    u"""Vista paralela ao esboço da 1ª referência de esboço (planta ou elevação).
+
+    Trava de curva de esboço só nasce na vista em que o esboço aparece em
+    verdadeira grandeza (sonda S11: na planta, um esboço da Front recusa).
+    """
+    normal = _normal_do_esboco(formas, enderecos)
+    if normal is None:
+        return None
+    if abs(abs(normal.Z) - 1.0) < 1e-6:
+        return planta
+    for vista in FilteredElementCollector(doc).OfClass(View).ToElements():
+        if not vista.IsTemplate and vista.ViewType == ViewType.Elevation and \
+                abs(abs(vista.ViewDirection.DotProduct(normal)) - 1.0) < 1e-6:
+            return vista
     return None
 
 
@@ -842,8 +917,9 @@ def _linha_para_cota(referencias_spec, planos):
 def construir_cotas(doc, vista, especificacao, planos, parametros):
     u"""Cotas rotuladas: onde o flex é religado (dim.FamilyLabel)."""
     for indice, item in enumerate(especificacao[u"cotas"]):
-        if item.get(u"forma") in (u"Radial", u"Diameter"):
-            continue  # nasce depois da forma (construir_cotas_radiais)
+        if item.get(u"forma") in (u"Radial", u"Diameter") or \
+                any(e.get(u"tipo") == u"esboco" for e in item[u"referencias"]):
+            continue  # nasce depois da forma (construir_cotas_radiais / _de_esboco)
         rotulo = item.get(u"rotulo")
 
         referencias = ReferenceArray()
@@ -881,8 +957,18 @@ def construir_cotas(doc, vista, especificacao, planos, parametros):
             else:
                 _pular(u"rótulo da cota #{0}".format(indice),
                        u"parâmetro '{0}' não existe no destino".format(rotulo))
+        _aplicar_igualdade(cota, item, indice)
 
     doc.Regenerate()
+
+
+def _aplicar_igualdade(cota, item, indice):
+    if not item.get(u"iguais"):
+        return
+    try:
+        cota.AreSegmentsEqual = True
+    except Exception as erro:
+        _pular(u"igualdade (EQ) da cota #{0}".format(indice), unicode(erro)[:140])  # noqa: F821
 
 
 _DOC_EM_CONSTRUCAO = [None]
@@ -928,6 +1014,67 @@ def _aplicar_subcategoria_e_visibilidade(doc, item, forma):
         except Exception as erro:
             _pular(u"visibilidade da forma #{0}".format(item[u"indice"]),
                    unicode(erro)[:140])  # noqa: F821
+
+
+def _ponto_da_referencia_de_esboco(formas, endereco):
+    curva = _curva_de_esboco(formas, endereco)
+    if curva is None:
+        return None, None
+    if endereco.get(u"ponta") is not None:
+        return curva, curva.GetEndPoint(_indice_da_ponta(curva, endereco))
+    return curva, curva.Evaluate(0.5, True)
+
+
+def construir_cotas_de_esboco(doc, vista, especificacao, formas, planos, parametros):
+    u"""Cota LINEAR que toca curva de esboço (rotulada ou travada), sonda S11.
+
+    Nasce depois das formas, com a geometria ainda na configuração serializada
+    (se o plano já tivesse se movido, o Revit recusaria). A linha da cota sai
+    da normal do plano medido; sem plano (duas curvas do esboço), da
+    perpendicular à curva dentro do esboço.
+    """
+    for indice, item in enumerate(especificacao[u"cotas"]):
+        if item.get(u"forma") in (u"Radial", u"Diameter"):
+            continue
+        enderecos = item[u"referencias"]
+        if not any(e.get(u"tipo") == u"esboco" for e in enderecos):
+            continue
+        rotulo = item.get(u"rotulo")
+        nome = u"cota de esboço #{0} (rótulo={1})".format(indice, rotulo)
+        referencias = ReferenceArray()
+        plano = None
+        curva = ponto = None
+        for endereco in enderecos:
+            referencia = _resolver_referencia(endereco, planos, formas)
+            if referencia is None:
+                referencias = None
+                break
+            referencias.Append(referencia)
+            if endereco[u"tipo"] == u"plano":
+                plano = plano or planos.get(endereco[u"nome"])
+            elif endereco[u"tipo"] == u"esboco" and curva is None:
+                curva, ponto = _ponto_da_referencia_de_esboco(formas, endereco)
+        vista_da_cota = _vista_paralela_ao_esboco(doc, formas, enderecos, vista)
+        if referencias is None or curva is None or vista_da_cota is None:
+            _pular(nome, u"referência, curva ou vista não reencontradas")
+            continue
+        if plano is not None:
+            direcao = plano.Normal
+        else:
+            normal = _normal_do_esboco(formas, enderecos)
+            tangente = curva.ComputeDerivatives(0.5, True).BasisX.Normalize()
+            direcao = normal.CrossProduct(tangente)
+        try:
+            cota = doc.FamilyCreate.NewDimension(
+                vista_da_cota, Line.CreateBound(ponto, ponto + direcao.Normalize().Multiply(mm(100))), referencias)
+            if rotulo and parametros.get(rotulo) is not None:
+                cota.FamilyLabel = parametros[rotulo]
+            if item.get(u"travada"):
+                cota.IsLocked = True
+            _aplicar_igualdade(cota, item, indice)
+        except Exception as erro:
+            _pular(nome, unicode(erro)[:140])  # noqa: F821
+    doc.Regenerate()
 
 
 def construir_cotas_radiais(doc, vista, especificacao, formas, parametros):
@@ -1020,6 +1167,44 @@ def _associar_raio_pelo_diametro(doc, conector, alvo_raio, nome_raio, parametros
            u"adaptado: a API não associa o raio; diâmetro -> '{0}' e '{1}' = '{0}' / 2".format(nome_d, nome_raio))
 
 
+def _face_de_apoio_no_plano(doc, plano, face_spec):
+    u"""Face para o conector que a origem prendia num PLANO de referência (S12).
+
+    No Revit 2023 `CreatePipeConnector` com a referência do plano falha
+    ("oEdgeLoopRef.ptr() is NULL"); no 2024 nasce, mas na ponta do plano, e
+    não no ponto da origem. Caminho que funcionou nas duas versões: um disco
+    VAZIO de 1 mm hospedado no próprio plano (acompanha o plano no flex), no
+    ponto da origem, do lado para onde o conector aponta (o vazio tem as
+    normais invertidas). Vazio não corta nada sem CombineElements, não entra
+    na medição de volume e não aparece no projeto.
+    """
+    esboco = SketchPlane.Create(doc, plano.Id)
+    geometrico = esboco.GetPlane()
+    direcao = _vetor(face_spec[u"normal"]).Normalize()
+    centro = _xyz(face_spec[u"origem"])
+    centro = centro - geometrico.Normal.Multiply((centro - geometrico.Origin).DotProduct(geometrico.Normal))
+    raio = mm(1.0)
+    laco = CurveArray()
+    laco.Append(Arc.Create(centro, raio, 0.0, math.pi, geometrico.XVec, geometrico.YVec))
+    laco.Append(Arc.Create(centro, raio, math.pi, 2 * math.pi, geometrico.XVec, geometrico.YVec))
+    perfil = CurveArrArray()
+    perfil.Append(laco)
+    sentido = 1.0 if geometrico.Normal.DotProduct(direcao) > 0 else -1.0
+    disco = doc.FamilyCreate.NewExtrusion(False, perfil, esboco, mm(sentido))
+    doc.Regenerate()
+    opcoes = Options()
+    opcoes.ComputeReferences = True
+    for objeto in disco.get_Geometry(opcoes):
+        if not isinstance(objeto, Solid):
+            continue
+        for face in objeto.Faces:
+            if isinstance(face, PlanarFace) and face.FaceNormal.IsAlmostEqualTo(direcao) and \
+                    abs((face.Origin - geometrico.Origin).DotProduct(geometrico.Normal)) < mm(0.01):
+                return face.Reference
+    doc.Delete(disco.Id)
+    return None
+
+
 def construir_conectores(doc, especificacao, formas, parametros, planos=None):
     u"""Conectores de tubo nas faces planas (schema 0.3.0; sonda S9 da G5).
 
@@ -1037,7 +1222,8 @@ def construir_conectores(doc, especificacao, formas, parametros, planos=None):
             continue
         if item[u"face"].get(u"plano"):
             plano = (planos or {}).get(item[u"face"][u"plano"])
-            referencia_hospedeira = plano.GetReference() if plano is not None else None
+            referencia_hospedeira = _face_de_apoio_no_plano(doc, plano, item[u"face"]) \
+                if plano is not None else None
         else:
             forma = formas.get(item[u"face"][u"forma"])
             face = _face_por_endereco(forma, item[u"face"]) if forma is not None else None
@@ -1117,7 +1303,7 @@ def _aplicar_alinhamentos_elegiveis(doc, vista, especificacao, planos, formas, a
 
         pendente = False
         for endereco in item[u"referencias"]:
-            if endereco[u"tipo"] == u"face" and endereco[u"forma"] not in formas:
+            if endereco[u"tipo"] in (u"face", u"esboco") and endereco[u"forma"] not in formas:
                 pendente = True
                 break
         if pendente:
@@ -1160,7 +1346,8 @@ def _aplicar_alinhamentos_elegiveis(doc, vista, especificacao, planos, formas, a
             normal_datum = planos[datum[u"nome"]].Normal
         else:
             normal_datum = _vetor(datum.get(u"normal") or [1.0, 0.0, 0.0])
-        vista_do_alinhamento = _vista_para_normal(doc, normal_datum, vista) or vista
+        vista_do_alinhamento = _vista_paralela_ao_esboco(doc, formas, enderecos, vista) or \
+            _vista_para_normal(doc, normal_datum, vista) or vista
         try:
             doc.FamilyCreate.NewAlignment(vista_do_alinhamento, resolvidas[0], resolvidas[1])
         except Exception as erro:
@@ -1498,6 +1685,7 @@ def principal():
         # construir_formas). O vazio só nasce com o sólido já resolvido.
         formas = construir_formas(doc, vista, especificacao, planos, parametros)
         construir_cotas_radiais(doc, vista, especificacao, formas, parametros)
+        construir_cotas_de_esboco(doc, vista, especificacao, formas, planos, parametros)
         aplicar_tipo_de_peca(doc, especificacao)
         construir_conectores(doc, especificacao, formas, parametros, planos)
         construir_combinacoes(doc, especificacao, formas)

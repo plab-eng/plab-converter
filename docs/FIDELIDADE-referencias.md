@@ -31,10 +31,15 @@ aninhadas; travas de linha de esboço.
 | 2. Tabelas de consulta (CSV byte a byte, aspas escapadas) | 44 → 27 com o item 3 | 6 | 7 | 9 | 6 |
 | 3. Elipse no perfil | 27 · corpo passa a existir; 1 de 7 tipos exato | — | — | — | — |
 | 4. Conector: raio → RN (adaptado) e conector em plano (lido) | 27 | 8 | 9 | 11 | 9 |
-| 6. Materiais por nome | **6** | **7** | **8** | **10** | **8** |
+| 6. Materiais por nome | 6 | 7 | 8 | 10 | 8 |
+| S11 + S12. Travas de esboço, EQ, conector em plano | **6** · **7 de 7 tipos exatos** | **8** · 7/7 travas | **8** | **10** | **8** · conectores 3/3 |
 
-Geometria própria da Ultrapex: **igual** (0,0% em extensão e volume) nas 4. Conectores: joelho e luvas 2 → 2;
-tê 3 lidos → 0 criados (ver limites).
+Geometria própria da Ultrapex: **igual** (0,0% em extensão e volume) nas 4. Conectores: 2 → 2 no joelho e nas
+luvas, 3 → 3 no tê. A Solaris sai com extensão e volume iguais nos 7 tipos (200 a 1000 L).
+
+Os 6 que sobram na Solaris são "One of the conditions for the inputs was not satisfied". Os itens que restam
+nas conexões são os mesmos de antes: parâmetros embutidos com nome traduzido (vão para a Rota B), a adaptação
+do raio e o tipo " ".
 
 O que sobra em cada conexão Ultrapex: os 2 parâmetros embutidos de categoria com nome traduzido no Revit 2023
 em português ("Loss Method", "K Coefficient Table" — pendência com a Rota B: casar por `BuiltInParameter`),
@@ -45,20 +50,25 @@ a adaptação do raio (registrada de propósito) e o tipo " " recriado como "Pad
 | Limite | Evidência |
 |---|---|
 | Raio de conector de tubo criado pela API não pode ser associado | Sonda S10 (`scripts/g5_sonda_raio.py`, Revit 2023): `CanElementParameterBeAssociated(CONNECTOR_RADIUS) = False` para Pipe Size e Length, instância e tipo; o diâmetro associa a todos. Adaptação: diâmetro → `<raio>_D`, raio = `<raio>_D / 2` (tamanho pelo tubo preservado; DN = RN × 2 continua) |
-| Conector de tubo não nasce em plano de referência | `CreatePipeConnector` com referência de plano: "oEdgeLoopRef.ptr() is NULL" (tê Ultrapex, 3 conectores). Lacuna nomeada |
-| Alinhamento com linha de esboço fora do modo de esboço | "The two references are not geometrically aligned" (20 na Solaris, 12 no tê); piorou o joelho; revertido. Vira a sonda S11 |
+| Conector de tubo em plano de referência | Sonda S12 (`scripts/s12_sonda_conector_plano.py`): no **2023** `CreatePipeConnector` com o plano dá "oEdgeLoopRef.ptr() is NULL"; no **2024** funciona, mas o conector nasce na ponta do plano, e não no ponto da origem. **Solução, provada no 2023:** um disco VAZIO de 1 mm hospedado no próprio plano, no ponto da origem, recebe o conector na face. O conector acompanha o plano e o DN, liga ao tubo no projeto e não soma volume (vazio sem corte) |
+| Trava de linha de esboço (alinhamento e cota) | Sonda S11 (`scripts/s11_sonda_esboco.py`): **funciona fora do modo de esboço** se for criada na vista paralela ao esboço e antes de o plano se mover (V1, V3 e V5 flexionam exatos; V4 reproduz o erro com o plano movido). O "not geometrically aligned" vinha de três coisas: (1) a trava na PONTA da curva (`LINEAR/0`, `LINEAR/1`) era lida como a curva inteira; (2) o destino recria o esboço com outra ordem e outro sentido de curvas, então o casamento por índice pegava a curva errada (corrigido: casamento pelas pontas e pelo ponto do meio); (3) a cota de igualdade (EQ) não existia no conversor: sem ela só um lado do diâmetro andava, e o diâmetro crescia em dobro |
 | O Revit não relê o próprio CSV de tabela com `1"` | "IncorrectNumberOfColumns"; corrigido escapando o campo com aspas |
 
-## Onde a Solaris ainda não é fiel
+## Uso em projeto (tê convertido, Revit 2023)
 
-- o diâmetro do corpo não flexiona (6 de 7 tipos com o diâmetro do tipo corrente; até +87% de volume): o
-  perfil da revolução é preso aos planos por travas de esboço → sonda S11;
-- os 9 bocais (e seus conectores) e o logo são famílias aninhadas → plano em
-  `docs/PLANO-aninhadas-e-travas-de-esboco.md` (decisão do José: por último, não executado nesta rodada).
+`scripts/teste_conexao_em_projeto.py`: os 3 conectores ligam a tubos de 16 mm. Trocar o diâmetro de um tubo
+ligado pela API não redimensiona a conexão, mas o tê ORIGINAL no 2024 faz o mesmo. Então a convertida se
+comporta igual, e o teste de redimensionamento pela API é inconclusivo (falta conferir pela interface).
+
+## O que ainda falta
+
+- os 9 bocais da Solaris (e seus conectores) e o logo são famílias aninhadas → plano em
+  `docs/PLANO-aninhadas-e-travas-de-esboco.md` (decisão do José: por último; não executado);
+- os anéis das conexões Ultrapex também são aninhados;
+- cotas ANGULARES travadas no esboço continuam lacuna (o construtor só recria cota linear).
 
 ## Próximo
 
-1. Sonda S11 (travas de esboço) — destrava o diâmetro da Solaris.
-2. Aninhadas (plano pronto).
-3. Recriar as duas pelo gerador com estas peças à mão (tabela de consulta e conector por diâmetro já servem às
+1. Aninhadas (plano pronto).
+2. Recriar as duas pelo gerador com estas peças à mão (tabela de consulta e conector por diâmetro já servem às
    conexões da Tigre: uma família com todos os DN, tamanho pelo tubo).

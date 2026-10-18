@@ -61,6 +61,9 @@ def principal():
             candidato = doc.GetElement(simbolo_id)
             if candidato.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM).AsString() == nome_tipo:
                 simbolo = candidato
+        if simbolo is None and len(list(carregada.Value.GetFamilySymbolIds())) == 1:
+            # tipo de nome " " (Ultrapex): a variável de ambiente não carrega o espaço
+            simbolo = doc.GetElement(list(carregada.Value.GetFamilySymbolIds())[0])
         simbolo.Activate()
         resultado[u"categoria"] = rfaspec.para_unicode(carregada.Value.FamilyCategory.Name)
         nivel = FilteredElementCollector(doc).OfClass(DB.Level).FirstElement()
@@ -83,6 +86,15 @@ def principal():
                              u"diametro_tubo_mm": round(rfaspec.interno_para_mm(tubo.Diameter), 1),
                              u"conectado": bool(conector.IsConnected)})
         resultado[u"ligacoes"] = ligacoes
+        # Família de roteamento (tamanho pelo tubo): trocar o diâmetro de um tubo
+        # ligado tem de redimensionar a conexão.
+        novo = rfaspec.env("RFADG_REDIMENSIONAR_MM")
+        if novo:
+            tubos = [e for e in FilteredElementCollector(doc).OfClass(DB.Plumbing.Pipe).ToElements()]
+            tubos[0].get_Parameter(BuiltInParameter.RBS_PIPE_DIAMETER_PARAM).Set(mm(float(novo)))
+            doc.Regenerate()
+            resultado[u"apos_redimensionar"] = [
+                round(rfaspec.interno_para_mm(2 * c.Radius), 1) for c in instancia.MEPModel.ConnectorManager.Connectors]
         status = t.Commit()
         resultado[u"aprovado"] = status == TransactionStatus.Committed and bool(ligacoes) and all(
             l[u"conectado"] and abs(l[u"diametro_conector_mm"] - l[u"diametro_tubo_mm"]) < 0.5 for l in ligacoes)

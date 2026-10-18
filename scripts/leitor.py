@@ -460,7 +460,7 @@ def ler_formas(doc):
         })
         formas.append(registro)
         indice_por_id[_id_valor(elemento.Id)] = indice
-        if isinstance(elemento, Extrusion):
+        if isinstance(elemento, (Extrusion, Revolution)):
             _mapear_curvas_de_esboco(elemento, indice, curvas_de_esboco)
 
     return formas, indice_por_id, lacunas, curvas_de_esboco
@@ -755,8 +755,28 @@ def _endereco_da_referencia(doc, referencia, indice_por_id, curvas_de_esboco=Non
 
     no_esboco = (curvas_de_esboco or {}).get(_id_valor(elemento.Id))
     if no_esboco is not None:
-        return {u"tipo": u"esboco", u"forma": no_esboco[0],
-                u"laco": no_esboco[1], u"curva": no_esboco[2]}
+        endereco = {u"tipo": u"esboco", u"forma": no_esboco[0],
+                    u"laco": no_esboco[1], u"curva": no_esboco[2]}
+        # A trava pode ser na PONTA da curva, não na curva (sonda S11: a
+        # Solaris prende o perfil assim). A representação estável termina em
+        # "LINEAR/0" ou "LINEAR/1" nesse caso; tratar como a curva inteira dá
+        # "not geometrically aligned" no destino.
+        # O destino recria o esboço com outra ordem e outro sentido de curvas
+        # (S11): o construtor casa pela GEOMETRIA (pontas da curva e ponto da
+        # trava), e laço/curva ficam só como pista.
+        try:
+            curva = elemento.GeometryCurve
+            endereco[u"pontas_mm"] = [_ponto(curva.GetEndPoint(0)), _ponto(curva.GetEndPoint(1))]
+            # Arco e corda de um semicírculo têm as mesmas pontas: o meio desempata.
+            endereco[u"meio_mm"] = _ponto(curva.Evaluate(0.5, True))
+            estavel = referencia.ConvertToStableRepresentation(doc)
+            for ponta in (0, 1):
+                if estavel.endswith(u"LINEAR/{0}".format(ponta)):
+                    endereco[u"ponta"] = ponta
+                    endereco[u"ponto_mm"] = _ponto(curva.GetEndPoint(ponta))
+        except Exception:
+            pass
+        return endereco
 
     indice_forma = indice_por_id.get(_id_valor(elemento.Id))
     if indice_forma is None:
@@ -812,6 +832,15 @@ def ler_combinacoes(doc, indice_por_id):
     return combinacoes, lacunas
 
 
+def _segmentos_iguais(dimensao):
+    u"""Cota de igualdade (EQ): é ela que centra o diâmetro da Solaris entre os
+    dois planos; sem ela, só um lado anda e o diâmetro cresce em dobro."""
+    try:
+        return dimensao.NumberOfSegments > 1 and bool(dimensao.AreSegmentsEqual)
+    except Exception:
+        return False
+
+
 def ler_cotas(doc, indice_por_id, curvas_de_esboco=None):
     u"""Cotas rotuladas e restrições de alinhamento.
 
@@ -848,7 +877,24 @@ def ler_cotas(doc, indice_por_id, curvas_de_esboco=None):
         # Revit cria sozinho, continuam lacuna como antes do schema 0.2.0:
         # o construtor não as recria e só gerariam ruído no relatório.
         no_esboco = any(e.get(u"tipo") == u"esboco" for e in enderecos)
-        if incompleta or len(enderecos) < minimo or (no_esboco and not radial):
+        com_plano = any(e.get(u"tipo") == u"plano" for e in enderecos)
+        try:
+            travada = bool(dimensao.IsLocked)
+        except Exception:
+            travada = False
+        try:
+            rotulada = dimensao.FamilyLabel is not None
+        except Exception:
+            rotulada = False
+        # Curva de esboço presa a plano é o que faz o PERFIL flexionar (S11):
+        # alinhamento esboço+plano, cota com plano rotulada ou travada, e cota
+        # travada entre curvas do esboço. Cota solta do esboço (anotação, ou
+        # as que o Revit cria sozinho) continua lacuna.
+        # Angular fica de fora: o construtor só recria cota linear no esboço.
+        linear = forma_da_cota == u"Linear"
+        esboco_aceito = radial or eh_restricao and com_plano or \
+            linear and (com_plano and (rotulada or travada) or travada)
+        if incompleta or len(enderecos) < minimo or (no_esboco and not esboco_aceito):
             lacunas.append({
                 u"elemento_id": _id_valor(dimensao.Id),
                 u"eh_restricao": eh_restricao,
@@ -872,6 +918,8 @@ def ler_cotas(doc, indice_por_id, curvas_de_esboco=None):
             u"referencias": enderecos,
             u"rotulo": rotulo.Definition.Name if rotulo is not None else None,
             u"forma": forma_da_cota,
+            u"travada": travada,
+            u"iguais": _segmentos_iguais(dimensao),
         })
 
     return cotas, alinhamentos, lacunas

@@ -50,7 +50,10 @@ pela tabela) — aceite medido, não declarado.
 
 ---
 
-## Travas de esboço (sonda S11, também pendente)
+## Travas de esboço (sonda S11): FEITA em 18/10
+
+Resolvida, ver `docs/FIDELIDADE-referencias.md` (trava pela ponta, casamento pela geometria, EQ). Abaixo, o
+registro do que estava pendente.
 
 **O que falta:** o perfil da revolução da Solaris (corpo) é preso aos planos por 24 alinhamentos e 14 cotas
 **dentro do esboço**. Sem eles o comprimento flexiona, mas o diâmetro não (6 de 7 tipos com a geometria do
