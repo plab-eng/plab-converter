@@ -1025,6 +1025,69 @@ def _ponto_da_referencia_de_esboco(formas, endereco):
     return curva, curva.Evaluate(0.5, True)
 
 
+def _reta_da_referencia(endereco, planos, formas, normal_do_esboco):
+    u"""(ponto, direção) da referência dentro do plano do esboço."""
+    if endereco[u"tipo"] == u"plano":
+        plano = planos.get(endereco[u"nome"])
+        return plano.BubbleEnd, plano.Normal.CrossProduct(normal_do_esboco).Normalize()
+    curva = _curva_de_esboco(formas, endereco)
+    if curva is None or not isinstance(curva, Line):
+        return None
+    return curva.GetEndPoint(0), curva.Direction
+
+
+def _cota_angular_de_esboco(doc, vista, item, indice, nome, enderecos, referencias, planos, formas, parametros):
+    u"""Cota angular (travada ou rotulada) entre duas retas do esboço / planos.
+
+    `FamilyItemFactory.NewAngularDimension(vista, arco, ref1, ref2)`: o arco só
+    posiciona a cota e tem centro no cruzamento das duas retas.
+    """
+    normal = _normal_do_esboco(formas, enderecos)
+    retas = [_reta_da_referencia(e, planos, formas, normal) for e in enderecos]
+    if normal is None or any(r is None for r in retas):
+        _pular(nome, u"cota angular: reta da referência não reencontrada")
+        return
+    origem = None
+    for endereco in enderecos:
+        if endereco[u"tipo"] == u"esboco":
+            origem = formas[endereco[u"forma"]].Sketch.SketchPlane.GetPlane().Origin
+    # leva os pontos para o plano do esboço (a bolha do plano pode estar fora dele)
+    retas = [(p - normal.Multiply((p - origem).DotProduct(normal)), d) for p, d in retas]
+    (p1, d1), (p2, d2) = retas
+    # cruzamento: p1 + s*d1 = p2 + t*d2, resolvido no plano do esboço
+    cruz = d1.CrossProduct(d2)
+    if cruz.GetLength() < 1e-9:
+        _pular(nome, u"cota angular entre retas paralelas")
+        return
+    s = (p2 - p1).CrossProduct(d2).DotProduct(cruz) / cruz.DotProduct(cruz)
+    centro = p1 + d1.Multiply(s)
+    # cada raio aponta para o lado onde a curva do esboço está (não para trás)
+    raios = []
+    for endereco, (ponto, direcao) in zip(enderecos, retas):
+        if endereco[u"tipo"] == u"esboco":
+            curva = _curva_de_esboco(formas, endereco)
+            meio = curva.Evaluate(0.5, True)
+            if (meio - centro).DotProduct(direcao) < 0:
+                direcao = direcao.Negate()
+        raios.append(direcao)
+    if (raios[0] + raios[1]).GetLength() < 1e-9:
+        _pular(nome, u"cota angular de 180 graus")
+        return
+    raio = mm(20.0)
+    bissetriz = (raios[0] + raios[1]).Normalize()
+    try:
+        arco = Arc.Create(centro + raios[0].Multiply(raio), centro + raios[1].Multiply(raio),
+                          centro + bissetriz.Multiply(raio))
+        cota = doc.FamilyCreate.NewAngularDimension(vista, arco, referencias.get_Item(0), referencias.get_Item(1))
+        rotulo = item.get(u"rotulo")
+        if rotulo and parametros.get(rotulo) is not None:
+            cota.FamilyLabel = parametros[rotulo]
+        if item.get(u"travada"):
+            cota.IsLocked = True
+    except Exception as erro:
+        _pular(nome, unicode(erro)[:140])  # noqa: F821
+
+
 def construir_cotas_de_esboco(doc, vista, especificacao, formas, planos, parametros):
     u"""Cota LINEAR que toca curva de esboço (rotulada ou travada), sonda S11.
 
@@ -1058,6 +1121,10 @@ def construir_cotas_de_esboco(doc, vista, especificacao, formas, planos, paramet
         if referencias is None or curva is None or vista_da_cota is None:
             _pular(nome, u"referência, curva ou vista não reencontradas")
             continue
+        if item.get(u"forma") == u"Angular":
+            _cota_angular_de_esboco(doc, vista_da_cota, item, indice, nome, enderecos, referencias,
+                                    planos, formas, parametros)
+            continue
         if plano is not None:
             direcao = plano.Normal
         else:
@@ -1077,6 +1144,24 @@ def construir_cotas_de_esboco(doc, vista, especificacao, formas, planos, paramet
     doc.Regenerate()
 
 
+def _com_geometria_do_spec(endereco, especificacao):
+    u"""Endereço de esboço sem as pontas gravadas (o leitor nem sempre consegue):
+    completa com a curva do PERFIL do spec, para o casamento pela geometria."""
+    if endereco.get(u"pontas_mm"):
+        return endereco
+    try:
+        curva = especificacao[u"formas"][endereco[u"forma"]][u"perfil"][endereco[u"laco"]][endereco[u"curva"]]
+    except Exception:
+        return endereco
+    if not curva.get(u"inicio") or not curva.get(u"fim"):
+        return endereco
+    completo = dict(endereco)
+    completo[u"pontas_mm"] = [curva[u"inicio"], curva[u"fim"]]
+    if curva.get(u"meio"):
+        completo[u"meio_mm"] = curva[u"meio"]
+    return completo
+
+
 def construir_cotas_radiais(doc, vista, especificacao, formas, parametros):
     u"""Cota radial rotulada na curva do ESBOÇO de uma forma (schema 0.2.0).
 
@@ -1088,6 +1173,11 @@ def construir_cotas_radiais(doc, vista, especificacao, formas, parametros):
         if item.get(u"forma") not in (u"Radial", u"Diameter"):
             continue
         rotulo = item.get(u"rotulo")
+        if not rotulo and not item.get(u"travada"):
+            # Só anotação (sem rótulo, sem trava): não muda o flex, e criá-la
+            # desfez as travas das faces da forma na Solaris (formas 6 e 7:
+            # +8 mm no comprimento). Fica de fora de propósito.
+            continue
         endereco = item[u"referencias"][0]
         if endereco.get(u"tipo") != u"esboco":
             _pular(u"cota {0} #{1} (rótulo={2})".format(item[u"forma"], indice, rotulo),
@@ -1099,14 +1189,24 @@ def construir_cotas_radiais(doc, vista, especificacao, formas, parametros):
                    u"forma não foi reconstruída")
             continue
         try:
-            laco = list(forma.Sketch.Profile)[endereco[u"laco"]]
-            curva = list(laco)[endereco[u"curva"]]
-            centro = curva.Center
-            origem = XYZ(centro.X + curva.Radius * 0.7, centro.Y + curva.Radius * 0.7, 0.0)
+            endereco = _com_geometria_do_spec(endereco, especificacao)
+            curva = _curva_de_esboco(formas, endereco)
+            if curva is None or not isinstance(curva, Arc):
+                raise ValueError(u"arco do esboço não reencontrado pela geometria")
+            # Esboço vertical (Solaris: bocais no plano de normal X) só aceita a
+            # cota na vista paralela a ele; na planta: "One of the conditions
+            # for the inputs was not satisfied" (6 cotas da Solaris).
+            vista_da_cota = _vista_paralela_ao_esboco(doc, formas, [endereco], vista) or vista
+            plano = forma.Sketch.SketchPlane.GetPlane()
+            origem = curva.Center + (plano.XVec + plano.YVec).Multiply(curva.Radius * 0.5)
             if item[u"forma"] == u"Diameter":
-                cota = doc.FamilyCreate.NewDiameterDimension(vista, curva.Reference, origem)
+                cota = doc.FamilyCreate.NewDiameterDimension(vista_da_cota, curva.Reference, origem)
             else:
-                cota = doc.FamilyCreate.NewRadialDimension(vista, curva.Reference, origem)
+                cota = doc.FamilyCreate.NewRadialDimension(vista_da_cota, curva.Reference, origem)
+            if item.get(u"travada"):
+                cota.IsLocked = True
+            if not rotulo:
+                continue
             parametro = parametros.get(rotulo)
             if parametro is None:
                 _pular(u"rótulo da cota radial #{0}".format(indice),

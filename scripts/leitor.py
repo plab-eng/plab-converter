@@ -890,9 +890,12 @@ def ler_cotas(doc, indice_por_id, curvas_de_esboco=None):
         # alinhamento esboço+plano, cota com plano rotulada ou travada, e cota
         # travada entre curvas do esboço. Cota solta do esboço (anotação, ou
         # as que o Revit cria sozinho) continua lacuna.
-        # Angular fica de fora: o construtor só recria cota linear no esboço.
+        # Angular: só entre duas curvas/planos (sem trava de ponta), rotulada ou
+        # travada; o construtor recria pelo cruzamento das duas referências.
         linear = forma_da_cota == u"Linear"
-        esboco_aceito = radial or eh_restricao and com_plano or \
+        angular = forma_da_cota == u"Angular" and len(enderecos) == 2 and \
+            not any(e.get(u"ponta") is not None for e in enderecos) and (rotulada or travada)
+        esboco_aceito = radial or angular or eh_restricao and com_plano or \
             linear and (com_plano and (rotulada or travada) or travada)
         if incompleta or len(enderecos) < minimo or (no_esboco and not esboco_aceito):
             lacunas.append({
