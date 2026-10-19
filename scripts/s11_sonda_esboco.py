@@ -125,7 +125,8 @@ def diagnostico(app, caminho, saida):
     registro = saida.setdefault(u"registro", [])
     doc = app.OpenDocumentFile(caminho)
     try:
-        revolucoes = list(DB.FilteredElementCollector(doc).OfClass(DB.Revolution).ToElements())
+        revolucoes = list(DB.FilteredElementCollector(doc).OfClass(DB.Revolution).ToElements()) + \
+            list(DB.FilteredElementCollector(doc).OfClass(DB.Extrusion).ToElements())
         cotas = list(DB.FilteredElementCollector(doc).OfClass(DB.Dimension).ToElements())
         id_restricoes = int(DB.BuiltInCategory.OST_Constraints)
         lista = []
@@ -330,7 +331,7 @@ def principal():
             saida[u"diagnostico"][u"traceback"] = rfaspec.para_unicode(traceback.format_exc())[-800:]
     template = rfaspec.env("RFADG_TEMPLATE", obrigatorio=True)
     saida[u"variantes"] = []
-    for nome in rfaspec.env("RFADG_S11_VARIANTES", u"V1,V2,V3,V4,V5").split(u","):
+    for nome in [n for n in rfaspec.env("RFADG_S11_VARIANTES", u"V1,V2,V3,V4,V5").split(u",") if n.strip() and n != u"-"]:
         variante(app, template, nome, saida[u"variantes"])
     rfaspec.gravar_json(rfaspec.env("RFADG_RELATORIO", obrigatorio=True), saida)
 

@@ -40,7 +40,7 @@ from Autodesk.Revit.DB import (  # noqa: E402
     FilteredElementCollector, View, ViewType, ReferencePlane,
     Options, Solid, PlanarFace, Category, StorageType, Transform,
     BuiltInParameter, BuiltInCategory, SpecTypeId, GroupTypeId,
-    ExternalDefinitionCreationOptions, ProfilePlaneLocation,
+    ExternalDefinitionCreationOptions, ProfilePlaneLocation, Level,
 )
 from System import Enum, Guid  # noqa: E402
 
@@ -82,7 +82,14 @@ def _vista_de_planta(doc):
 _NAO_REPRODUZIDO = []
 
 
+# Nome da família aninhada em construção (os itens dela entram no mesmo
+# relatório, prefixados).
+_PREFIXO = [u""]
+
+
 def _pular(o_que, motivo):
+    if _PREFIXO[0]:
+        o_que = u"[{0}] {1}".format(_PREFIXO[0], o_que)
     _NAO_REPRODUZIDO.append({u"item": o_que, u"motivo": motivo})
     log(u"NÃO REPRODUZIDO: {0} — {1}".format(o_que, motivo))
 
@@ -94,6 +101,8 @@ _ADAPTADO = []
 
 
 def _adaptar(o_que, como):
+    if _PREFIXO[0]:
+        o_que = u"[{0}] {1}".format(_PREFIXO[0], o_que)
     _ADAPTADO.append({u"item": o_que, u"como": como})
     log(u"ADAPTADO: {0} — {1}".format(o_que, como))
 
@@ -539,6 +548,16 @@ def _curva_do_spec(item):
         return Ellipse.CreateCurve(_xyz(item[u"centro"]), mm(item[u"raio_x"]), mm(item[u"raio_y"]),
                                    _vetor(item[u"eixo_x"]), _vetor(item[u"eixo_y"]),
                                    item[u"parametro_inicial"], item[u"parametro_final"])
+    if item[u"tipo"] == u"nurbs":
+        from Autodesk.Revit.DB import NurbSpline
+        from System.Collections.Generic import List
+        curva = NurbSpline.CreateCurve(int(item[u"grau"]), List[float](item[u"nos"]),
+                                       List[XYZ]([_xyz(p) for p in item[u"controle"]]),
+                                       List[float](item[u"pesos"]))
+        inicio, fim = curva.GetEndParameter(0), curva.GetEndParameter(1)
+        if abs(inicio - item[u"parametro_inicial"]) > 1e-9 or abs(fim - item[u"parametro_final"]) > 1e-9:
+            curva.MakeBound(item[u"parametro_inicial"], item[u"parametro_final"])
+        return curva
     raise ValueError(u"Curva fora da cobertura: {0}".format(item[u"tipo"]))
 
 
@@ -756,6 +775,15 @@ def construir_formas(doc, vista, especificacao, planos, parametros):
 
             elif item[u"tipo"] == u"mescla":
                 forma = _criar_mescla(doc, item, plano_esboco)
+                if forma is not None:
+                    # O Revit normaliza a base para o plano do esboço ao criar
+                    # (BOCAL2 da Solaris: base 80 / topo 90 saíam 0 / 10).
+                    doc.Regenerate()
+                    for nome_bip, chave in ((u"BLEND_START_PARAM", u"deslocamento_base"),
+                                            (u"BLEND_END_PARAM", u"deslocamento_topo")):
+                        parametro = forma.get_Parameter(getattr(BuiltInParameter, nome_bip))
+                        if parametro is not None and item.get(chave) is not None and not parametro.IsReadOnly:
+                            parametro.Set(mm(item[chave]))
 
             elif item[u"tipo"] == u"varredura_mesclada":
                 forma = _criar_varredura_mesclada(doc, item, plano_esboco)
@@ -787,11 +815,109 @@ def construir_formas(doc, vista, especificacao, planos, parametros):
     # Nunca silencioso: alinhamento que ficou sem vez é porque referencia
     # forma que não foi reconstruída.
     for indice, item in enumerate(especificacao[u"alinhamentos"]):
-        if indice not in aplicados:
+        if indice not in aplicados and not _toca_aninhada(item):
             _pular(u"alinhamento #{0}".format(indice),
                    u"referencia forma que não foi reconstruída")
 
     return mapa
+
+
+def _esbocos_sem_restricao(especificacao):
+    u"""Índices das formas cujo esboço não tem NENHUMA restrição na origem.
+
+    Conservador: qualquer referência ao esboço (cota, alinhamento, cota radial)
+    ou alinhamento de face LATERAL (que move uma curva do perfil) tira a forma
+    da lista. Face de topo/base só mexe na profundidade, não no perfil.
+    """
+    tocadas = set()
+    formas = especificacao.get(u"formas") or []
+    for item in (especificacao.get(u"cotas") or []) + (especificacao.get(u"alinhamentos") or []):
+        for endereco in item[u"referencias"]:
+            if endereco.get(u"tipo") == u"esboco":
+                tocadas.add(endereco[u"forma"])
+            elif endereco.get(u"tipo") == u"face" and endereco.get(u"forma") is not None:
+                indice = endereco[u"forma"]
+                if indice < len(formas) and formas[indice].get(u"plano_de_esboco"):
+                    normal = _vetor(formas[indice][u"plano_de_esboco"][u"normal"])
+                    if abs(abs(_vetor(endereco[u"normal"]).Normalize().DotProduct(normal)) - 1.0) > 1e-6:
+                        tocadas.add(indice)
+    return [f[u"indice"] for f in formas if f.get(u"tipo") in (u"extrusao", u"revolucao") and
+            f[u"indice"] not in tocadas]
+
+
+def congelar_esbocos_livres(doc, vista, especificacao, formas):
+    u"""Prende aos planos fixos do template o esboço que na origem é livre.
+
+    Sondas S17/S18: com qualquer cota rotulada na família, o Revit cria
+    "cotas automáticas de esboço" (Automatic Sketch Dimensions) até as
+    referências mais próximas; elas comandam o perfil e voltam se apagadas. O
+    sextavado dos bocais da Solaris (polígono rígido na origem, 6 linhas soltas
+    pela API) passava a seguir o diâmetro. Esboço sem restrição na origem fica
+    PARADO quando os parâmetros mudam; aqui cada vértice é travado nos planos
+    centrais (que definem a origem e não se movem), e o Revit retira as
+    automáticas (S18-E: 10 -> 0, sextavado parado).
+    """
+    nivel = FilteredElementCollector(doc).OfClass(Level).FirstElement()
+    centrais = []
+    for plano in FilteredElementCollector(doc).OfClass(ReferencePlane).ToElements():
+        for eixo in (XYZ.BasisX, XYZ.BasisY, XYZ.BasisZ):
+            if abs(abs(plano.Normal.DotProduct(eixo)) - 1.0) < 1e-9 and abs(plano.BubbleEnd.DotProduct(eixo)) < 1e-9:
+                centrais.append((plano.GetReference(), plano.Normal, plano.BubbleEnd))
+    if nivel is not None:
+        centrais.append((nivel.GetPlaneReference(), XYZ.BasisZ, XYZ(0.0, 0.0, nivel.Elevation)))
+    for indice in _esbocos_sem_restricao(especificacao):
+        forma = formas.get(indice)
+        if forma is None:
+            continue
+        normal = forma.Sketch.SketchPlane.GetPlane().Normal
+        # Só os planos centrais que cortam o esboço (normal no plano do esboço).
+        uteis = [c for c in centrais if abs(c[1].DotProduct(normal)) < 1e-9]
+        direcoes = []
+        for referencia, normal_plano, ponto in uteis:
+            if not any(abs(abs(normal_plano.DotProduct(d)) - 1.0) < 1e-9 for d in direcoes):
+                direcoes.append(normal_plano)
+        if len(direcoes) < 2:
+            _pular(u"congelar esboço da forma #{0}".format(indice), u"esboço inclinado: sem planos fixos no plano dele")
+            continue
+        vista_do_esboco = _vista_paralela_ao_esboco(doc, formas, [{u"tipo": u"esboco", u"forma": indice}], vista)
+        if vista_do_esboco is None:
+            continue
+        vistos = []
+        falhas = 0
+        for laco in forma.Sketch.Profile:
+            for curva in laco:
+                for ponta in (0, 1):
+                    ponto = curva.GetEndPoint(ponta)
+                    if any(ponto.DistanceTo(v) < 1e-9 for v in vistos):
+                        continue
+                    vistos.append(ponto)
+                    usados = []
+                    for referencia, normal_plano, origem_plano in uteis:
+                        if any(abs(abs(normal_plano.DotProduct(u)) - 1.0) < 1e-9 for u in usados):
+                            continue
+                        usados.append(normal_plano)
+                        distancia = (ponto - origem_plano).DotProduct(normal_plano)
+                        try:
+                            if abs(distancia) < 1e-9:
+                                doc.FamilyCreate.NewAlignment(vista_do_esboco, referencia,
+                                                              curva.GetEndPointReference(ponta))
+                            else:
+                                arranjo = ReferenceArray()
+                                arranjo.Append(referencia)
+                                arranjo.Append(curva.GetEndPointReference(ponta))
+                                cota = doc.FamilyCreate.NewDimension(
+                                    vista_do_esboco, Line.CreateBound(ponto, ponto + normal_plano.Multiply(mm(10))), arranjo)
+                                cota.IsLocked = True
+                        except Exception:
+                            falhas += 1
+        if falhas:
+            _pular(u"congelar esboço da forma #{0}".format(indice),
+                   u"{0} trava(s) de vértice recusada(s) (vértice em arco/ponta repetida)".format(falhas))
+    doc.Regenerate()
+
+
+def _toca_aninhada(item):
+    return any(e.get(u"tipo") == u"aninhada" for e in item[u"referencias"])
 
 
 # --------------------------------------------------------------------------
@@ -828,6 +954,13 @@ def _resolver_referencia(endereco, planos, formas):
         face = _face_por_endereco(elemento, endereco)
         return face.Reference if face is not None else None
 
+    if endereco[u"tipo"] == u"aninhada":
+        return _referencia_da_aninhada(endereco)
+
+    if endereco[u"tipo"] == u"nivel":
+        nivel = FilteredElementCollector(_DOC_EM_CONSTRUCAO[0]).OfClass(Level).FirstElement()
+        return nivel.GetPlaneReference() if nivel is not None else None
+
     if endereco[u"tipo"] == u"esboco":
         curva = _curva_de_esboco(formas, endereco)
         if curva is None:
@@ -852,6 +985,23 @@ def _curva_de_esboco(formas, endereco):
         lacos = [list(laco) for laco in elemento.Sketch.Profile]
     except Exception:
         return None
+    if endereco.get(u"laco") == -1:
+        # eixo da revolução (fora do perfil): as linhas do esboço que sobram
+        try:
+            documento = elemento.Document
+            perfil = set(rfaspec.id_inteiro(c.Reference.ElementId) for laco in lacos for c in laco
+                         if c.Reference is not None)
+            extras = []
+            for identificador in elemento.Sketch.GetAllElements():
+                if rfaspec.id_inteiro(identificador) in perfil:
+                    continue
+                curva_elemento = documento.GetElement(identificador)
+                curva = getattr(curva_elemento, "GeometryCurve", None)
+                if curva is not None:
+                    extras.append(curva)
+            lacos = [extras]
+        except Exception:
+            return None
     pontas = endereco.get(u"pontas_mm")
     if pontas:
         a, b = _xyz(pontas[0]), _xyz(pontas[1])
@@ -918,6 +1068,11 @@ def _linha_para_cota(referencias_spec, planos):
     pontos = []
     normal = None
     for endereco in referencias_spec:
+        if endereco[u"tipo"] == u"nivel":
+            nivel = FilteredElementCollector(_DOC_EM_CONSTRUCAO[0]).OfClass(Level).FirstElement()
+            if nivel is not None:
+                pontos.append(XYZ(0.0, 0.0, nivel.Elevation))
+                normal = normal or XYZ.BasisZ
         if endereco[u"tipo"] == u"plano":
             plano = planos.get(endereco[u"nome"])
             if plano is not None:
@@ -949,8 +1104,8 @@ def construir_cotas(doc, vista, especificacao, planos, parametros):
     u"""Cotas rotuladas: onde o flex é religado (dim.FamilyLabel)."""
     for indice, item in enumerate(especificacao[u"cotas"]):
         if item.get(u"forma") in (u"Radial", u"Diameter") or \
-                any(e.get(u"tipo") == u"esboco" for e in item[u"referencias"]):
-            continue  # nasce depois da forma (construir_cotas_radiais / _de_esboco)
+                any(e.get(u"tipo") in (u"esboco", u"aninhada") for e in item[u"referencias"]):
+            continue  # nasce depois da forma/aninhada (construir_cotas_radiais, _de_esboco, _de_aninhadas)
         rotulo = item.get(u"rotulo")
 
         referencias = ReferenceArray()
@@ -1156,12 +1311,25 @@ def construir_cotas_de_esboco(doc, vista, especificacao, formas, planos, paramet
             _cota_angular_de_esboco(doc, vista_da_cota, item, indice, nome, enderecos, referencias,
                                     planos, formas, parametros)
             continue
+        # A direção gravada da origem (item["direcao"]) NÃO é usada: medida,
+        # deformava as letras do logo da Solaris; a dedução abaixo reproduz.
         if plano is not None:
             direcao = plano.Normal
+        elif any(e[u"tipo"] == u"nivel" for e in enderecos):
+            direcao = XYZ.BasisZ
         else:
             normal = _normal_do_esboco(formas, enderecos)
-            tangente = curva.ComputeDerivatives(0.5, True).BasisX.Normalize()
-            direcao = normal.CrossProduct(tangente)
+            pontas = [_ponto_da_referencia_de_esboco(formas, e)[1] for e in enderecos
+                      if e[u"tipo"] == u"esboco" and e.get(u"ponta") is not None]
+            linhas = [_curva_de_esboco(formas, e) for e in enderecos
+                      if e[u"tipo"] == u"esboco" and e.get(u"ponta") is None]
+            if len(pontas) == 2 and pontas[0].DistanceTo(pontas[1]) > 1e-9:
+                # entre duas pontas (comprimento de uma linha): a reta entre elas
+                direcao = pontas[1] - pontas[0]
+            else:
+                base = linhas[0] if linhas and linhas[0] is not None else curva
+                tangente = base.ComputeDerivatives(0.5, True).BasisX.Normalize()
+                direcao = normal.CrossProduct(tangente)
         try:
             cota = doc.FamilyCreate.NewDimension(
                 vista_da_cota, Line.CreateBound(ponto, ponto + direcao.Normalize().Multiply(mm(100))), referencias)
@@ -1336,6 +1504,367 @@ def _face_de_apoio_no_plano(doc, plano, face_spec):
     return None
 
 
+# --------------------------------------------------------------------------
+# Famílias aninhadas (docs/PLANO-aninhadas-e-travas-de-esboco.md)
+# --------------------------------------------------------------------------
+
+# índice da instância no spec -> FamilyInstance criada
+_ANINHADAS_CRIADAS = {}
+
+
+def _referencia_da_aninhada(endereco):
+    import Autodesk.Revit.DB as DB
+    instancia = _ANINHADAS_CRIADAS.get(endereco[u"instancia"])
+    if instancia is None:
+        return None
+    nome = endereco.get(u"ref_nome")
+    # Pelo TIPO de referência e pela ordem: o nome do plano da aninhada vem do
+    # template no destino ("Center (Front/Back)") e não bate com o da origem.
+    tipo = getattr(DB.FamilyInstanceReferenceType, endereco.get(u"ref_tipo") or u"", None)
+    if tipo is not None and endereco.get(u"ref_tipo") != u"NotAReference":
+        referencias = list(instancia.GetReferences(tipo))
+        ordem = endereco.get(u"ref_ordem") or 0
+        if len(referencias) > ordem:
+            return referencias[ordem]
+    if nome:
+        try:
+            return instancia.GetReferenceByName(nome)
+        except Exception:
+            return None
+    return None
+
+
+def _alinhar_com_outro_plano_da_aninhada(doc, vista, enderecos, resolvidas):
+    import Autodesk.Revit.DB as DB
+    for posicao, endereco in enumerate(enderecos):
+        if endereco.get(u"tipo") != u"aninhada":
+            continue
+        instancia = _ANINHADAS_CRIADAS.get(endereco[u"instancia"])
+        tipo = getattr(DB.FamilyInstanceReferenceType, endereco.get(u"ref_tipo") or u"", None)
+        if instancia is None or tipo is None:
+            continue
+        for candidata in instancia.GetReferences(tipo):
+            par = list(resolvidas)
+            par[posicao] = candidata
+            try:
+                doc.FamilyCreate.NewAlignment(vista, par[0], par[1])
+                return True
+            except Exception:
+                continue
+    return False
+
+
+def _face_da_aninhada(doc, face_spec):
+    u"""Face plana da instância aninhada que contém a origem do conector."""
+    import Autodesk.Revit.DB as DB
+    instancia = _ANINHADAS_CRIADAS.get(face_spec[u"aninhada"])
+    if instancia is None:
+        return None
+    origem = _xyz(face_spec[u"origem"])
+    normal = _vetor(face_spec[u"normal"]).Normalize()
+    opcoes = Options()
+    opcoes.ComputeReferences = True
+    for objeto in instancia.get_Geometry(opcoes) or []:
+        if not isinstance(objeto, DB.GeometryInstance):
+            continue
+        # A referência da face vem da geometria do SÍMBOLO, posta no contexto
+        # da instância pela representação estável.
+        transformacao = objeto.Transform
+        for solido in objeto.GetSymbolGeometry():
+            if not isinstance(solido, Solid):
+                continue
+            for face in solido.Faces:
+                if not isinstance(face, PlanarFace) or face.Reference is None:
+                    continue
+                if not transformacao.OfVector(face.FaceNormal).IsAlmostEqualTo(normal):
+                    continue
+                projecao = face.Project(transformacao.Inverse.OfPoint(origem))
+                if projecao is None or projecao.Distance > 1e-6:
+                    continue
+                estavel = face.Reference.ConvertToStableRepresentation(doc)
+                return DB.Reference.ParseFromStableRepresentation(
+                    doc, u"{0}:0:INSTANCE:{1}".format(instancia.UniqueId, estavel))
+    return None
+
+
+def _nome_de_arquivo(nome):
+    return u"".join(c if c.isalnum() or c in u" ._-()" else u"_" for c in nome).strip() or u"aninhada"
+
+
+def _estado_do_construtor():
+    return (_DOC_EM_CONSTRUCAO[0], dict(_MATERIAIS_DO_SPEC), dict(_IMAGENS_DO_SPEC), dict(_IMAGENS_CRIADAS),
+            dict(_NOME_NO_DESTINO), dict(_ANINHADAS_CRIADAS), _PREFIXO[0])
+
+
+def _restaurar_construtor(estado):
+    _DOC_EM_CONSTRUCAO[0] = estado[0]
+    for alvo, valor in zip((_MATERIAIS_DO_SPEC, _IMAGENS_DO_SPEC, _IMAGENS_CRIADAS, _NOME_NO_DESTINO,
+                            _ANINHADAS_CRIADAS), estado[1:6]):
+        alvo.clear()
+        alvo.update(valor)
+    _PREFIXO[0] = estado[6]
+
+
+def construir_familias_aninhadas(app, template, especificacao):
+    u"""Constrói cada família aninhada (recursão) num .rfa temporário.
+
+    De dentro para fora, ANTES da transação da hospedeira: cada uma é um
+    documento próprio. Retorna índice -> caminho do .rfa.
+    """
+    import tempfile
+    caminhos = {}
+    for indice, item in enumerate(especificacao.get(u"familias_aninhadas") or []):
+        caminho = os.path.join(tempfile.mkdtemp(prefix=u"rfadg_aninhada_"),
+                               _nome_de_arquivo(item[u"nome"]) + u".rfa")
+        estado = _estado_do_construtor()
+        try:
+            _PREFIXO[0] = (estado[6] + u" > " if estado[6] else u"") + item[u"nome"]
+            construir_familia(app, template, item[u"especificacao"], caminho)
+            caminhos[indice] = caminho
+        except Exception as erro:
+            _restaurar_construtor(estado)
+            _pular(u"família aninhada '{0}'".format(item[u"nome"]), unicode(erro)[:160])  # noqa: F821
+            continue
+        finally:
+            _restaurar_construtor(estado)
+    return caminhos
+
+
+def _simbolo_da_familia(doc, familia, nome_tipo):
+    simbolos = [doc.GetElement(i) for i in familia.GetFamilySymbolIds()]
+    alvo = nome_tipo
+    if not (nome_tipo or u"").strip():
+        alvo = unichr(0x2800) * max(1, len(nome_tipo or u""))  # noqa: F821  (ver estabelecer_tipo_corrente)
+    for simbolo in simbolos:
+        if simbolo.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM).AsString() in (nome_tipo, alvo):
+            return simbolo
+    return simbolos[0] if len(simbolos) == 1 else None
+
+
+def _alinhar_instancia(doc, instancia, item):
+    u"""Espelha, gira e move a instância até a transformação da origem."""
+    import Autodesk.Revit.DB as DB
+    from System.Collections.Generic import List
+    alvo_x = _vetor(item[u"eixo_x"]).Normalize()
+    alvo_z = _vetor(item[u"eixo_z"]).Normalize()
+    alvo_p = _xyz(item[u"ponto"])
+    if item.get(u"espelhada") and not instancia.Mirrored:
+        atual = instancia.GetTransform()
+        DB.ElementTransformUtils.MirrorElements(
+            doc, List[DB.ElementId]([instancia.Id]), Plane.CreateByNormalAndOrigin(atual.BasisX, atual.Origin), False)
+        doc.Regenerate()
+    atual = instancia.GetTransform()
+    eixo = atual.BasisZ.CrossProduct(alvo_z)
+    if eixo.GetLength() > 1e-9:
+        DB.ElementTransformUtils.RotateElement(doc, instancia.Id, Line.CreateBound(atual.Origin, atual.Origin + eixo),
+                                               atual.BasisZ.AngleTo(alvo_z))
+    elif atual.BasisZ.DotProduct(alvo_z) < 0:
+        DB.ElementTransformUtils.RotateElement(doc, instancia.Id,
+                                               Line.CreateBound(atual.Origin, atual.Origin + atual.BasisX), math.pi)
+    doc.Regenerate()
+    atual = instancia.GetTransform()
+    angulo = atual.BasisX.AngleOnPlaneTo(alvo_x, alvo_z)
+    if abs(angulo) > 1e-9 and abs(angulo - 2 * math.pi) > 1e-9:
+        DB.ElementTransformUtils.RotateElement(doc, instancia.Id,
+                                               Line.CreateBound(atual.Origin, atual.Origin + alvo_z), angulo)
+        doc.Regenerate()
+    atual = instancia.GetTransform()
+    if atual.Origin.DistanceTo(alvo_p) > 1e-9:
+        DB.ElementTransformUtils.MoveElement(doc, instancia.Id, alvo_p - atual.Origin)
+        doc.Regenerate()
+
+
+def _face_que_contem(forma, ponto):
+    opcoes = Options()
+    opcoes.ComputeReferences = True
+    for objeto in forma.get_Geometry(opcoes):
+        if not isinstance(objeto, Solid):
+            continue
+        for face in objeto.Faces:
+            projecao = face.Project(ponto)
+            if projecao is not None and projecao.Distance < mm(0.01):
+                return face
+    return None
+
+
+def construir_aninhadas(doc, especificacao, planos, formas, parametros, caminhos):
+    u"""Carrega as famílias aninhadas e coloca as instâncias na posição da origem."""
+    import clr
+    import Autodesk.Revit.DB as DB
+    _ANINHADAS_CRIADAS.clear()
+    carregadas = {}
+    for indice, caminho in caminhos.items():
+        referencia = clr.Reference[DB.Family]()
+        try:
+            if doc.LoadFamily(caminho, referencia):
+                carregadas[indice] = referencia.Value
+            else:
+                _pular(u"carregar aninhada #{0}".format(indice), u"LoadFamily devolveu falso")
+        except Exception as erro:
+            _pular(u"carregar aninhada #{0}".format(indice), unicode(erro)[:160])  # noqa: F821
+    gerenciador = doc.FamilyManager
+    for indice, item in enumerate(especificacao.get(u"aninhadas") or []):
+        rotulo = u"aninhada #{0}".format(indice)
+        familia = carregadas.get(item[u"familia"])
+        if familia is None:
+            _pular(rotulo, u"família aninhada não foi construída/carregada")
+            continue
+        simbolo = _simbolo_da_familia(doc, familia, item.get(u"tipo"))
+        if simbolo is None:
+            _pular(rotulo, u"tipo '{0}' não existe na aninhada".format(item.get(u"tipo")))
+            continue
+        try:
+            if not simbolo.IsActive:
+                simbolo.Activate()
+                doc.Regenerate()
+            ponto = _xyz(item[u"ponto"])
+            hospedeiro = item.get(u"hospedeiro") or {}
+            referencia = None
+            if hospedeiro.get(u"tipo") == u"plano" and planos.get(hospedeiro[u"nome"]) is not None:
+                referencia = planos[hospedeiro[u"nome"]].GetReference()
+            elif hospedeiro.get(u"tipo") == u"face_da_forma" and formas.get(hospedeiro[u"forma"]) is not None:
+                face = _face_que_contem(formas[hospedeiro[u"forma"]], _xyz(hospedeiro[u"ponto"]))
+                referencia = face.Reference if face is not None else None
+                if referencia is None:
+                    _pular(rotulo, u"face hospedeira da forma não reencontrada; colocada solta")
+            elif hospedeiro.get(u"tipo"):
+                _pular(rotulo, u"hospedeiro {0} fora da cobertura; colocada solta".format(hospedeiro))
+            if referencia is not None:
+                instancia = doc.FamilyCreate.NewFamilyInstance(referencia, ponto, _vetor(item[u"eixo_x"]), simbolo)
+                doc.Regenerate()
+                if not instancia.GetTransform().BasisZ.IsAlmostEqualTo(_vetor(item[u"eixo_z"]).Normalize()):
+                    try:
+                        instancia.IsWorkPlaneFlipped = not instancia.IsWorkPlaneFlipped
+                        doc.Regenerate()
+                    except Exception:
+                        pass
+                if item.get(u"espelhada") != bool(instancia.Mirrored) or \
+                        not instancia.GetTransform().BasisX.IsAlmostEqualTo(_vetor(item[u"eixo_x"]).Normalize()):
+                    _alinhar_instancia(doc, instancia, item)
+            else:
+                instancia = doc.FamilyCreate.NewFamilyInstance(ponto, simbolo, DB.Structure.StructuralType.NonStructural)
+                doc.Regenerate()
+                _alinhar_instancia(doc, instancia, item)
+        except Exception as erro:
+            _pular(rotulo, unicode(erro)[:160])  # noqa: F821
+            continue
+        _ANINHADAS_CRIADAS[indice] = instancia
+        transformacao = instancia.GetTransform()
+        if transformacao.Origin.DistanceTo(_xyz(item[u"ponto"])) > mm(0.01) or \
+                not transformacao.BasisZ.IsAlmostEqualTo(_vetor(item[u"eixo_z"]).Normalize()) or \
+                not transformacao.BasisX.IsAlmostEqualTo(_vetor(item[u"eixo_x"]).Normalize()):
+            _pular(rotulo, u"posição/orientação diferente da origem depois de colocada")
+        for valor in item.get(u"valores") or []:
+            parametro = instancia.LookupParameter(valor[u"parametro"])
+            if parametro is None or parametro.IsReadOnly:
+                _pular(u"{0}: valor '{1}'".format(rotulo, valor[u"parametro"]), u"parâmetro não existe na instância")
+                continue
+            try:
+                dado = valor[u"valor"]
+                if isinstance(dado, dict) and dado.get(u"material"):
+                    parametro.Set(_material_por_nome(doc, dado[u"material"]))
+                elif valor.get(u"comprimento"):
+                    parametro.Set(mm(dado))
+                else:
+                    parametro.Set(dado)
+            except Exception as erro:
+                _pular(u"{0}: valor '{1}'".format(rotulo, valor[u"parametro"]), unicode(erro)[:140])  # noqa: F821
+        doc.Regenerate()
+        associada_visibilidade = False
+        for associacao in item.get(u"associacoes") or []:
+            nome = associacao[u"parametro"]
+            if associacao.get(u"embutido"):
+                parametro = instancia.get_Parameter(getattr(BuiltInParameter, associacao[u"embutido"]))
+            else:
+                parametro = instancia.LookupParameter(nome)
+            alvo = parametros.get(associacao[u"da_familia"])
+            if parametro is None or alvo is None:
+                _pular(u"{0}: associação '{1}' -> '{2}'".format(rotulo, nome, associacao[u"da_familia"]),
+                       u"parâmetro não existe na instância ou na família")
+                continue
+            try:
+                gerenciador.AssociateElementParameterToFamilyParameter(parametro, alvo)
+                if associacao.get(u"embutido") == u"IS_VISIBLE_PARAM":
+                    associada_visibilidade = True
+            except Exception as erro:
+                _pular(u"{0}: associação '{1}'".format(rotulo, nome), unicode(erro)[:140])  # noqa: F821
+        if item.get(u"visivel") is False and not associada_visibilidade:
+            try:
+                instancia.get_Parameter(BuiltInParameter.IS_VISIBLE_PARAM).Set(0)
+            except Exception as erro:
+                _pular(u"{0}: visibilidade".format(rotulo), unicode(erro)[:140])  # noqa: F821
+    doc.Regenerate()
+
+
+def construir_travas_de_aninhadas(doc, vista, especificacao, planos, formas, parametros):
+    u"""Alinhamentos e cotas que tocam aninhadas, depois da colocação."""
+    aplicados = set(i for i, item in enumerate(especificacao[u"alinhamentos"]) if not _toca_aninhada(item))
+    _aplicar_alinhamentos_elegiveis(doc, vista, especificacao, planos, formas, aplicados)
+    for indice, item in enumerate(especificacao[u"alinhamentos"]):
+        if indice not in aplicados:
+            _pular(u"alinhamento #{0}".format(indice), u"aninhada referenciada não foi colocada")
+    for indice, item in enumerate(especificacao[u"cotas"]):
+        if item.get(u"forma") in (u"Radial", u"Diameter") or not _toca_aninhada(item):
+            continue
+        rotulo = item.get(u"rotulo")
+        nome = u"cota #{0} (rótulo={1})".format(indice, rotulo)
+        referencias = ReferenceArray()
+        normal = ponto = None
+        for endereco in item[u"referencias"]:
+            referencia = _resolver_referencia(endereco, planos, formas)
+            if referencia is None:
+                referencias = None
+                break
+            referencias.Append(referencia)
+            if endereco[u"tipo"] == u"plano" and normal is None:
+                normal, ponto = planos[endereco[u"nome"]].Normal, planos[endereco[u"nome"]].BubbleEnd
+            elif endereco[u"tipo"] == u"aninhada":
+                transformacao = _ANINHADAS_CRIADAS[endereco[u"instancia"]].GetTransform()
+                eixo = {u"CenterLeftRight": transformacao.BasisX, u"Left": transformacao.BasisX,
+                        u"Right": transformacao.BasisX, u"CenterFrontBack": transformacao.BasisY,
+                        u"Front": transformacao.BasisY, u"Back": transformacao.BasisY,
+                        u"CenterElevation": transformacao.BasisZ, u"Top": transformacao.BasisZ,
+                        u"Bottom": transformacao.BasisZ}.get(endereco.get(u"ref_tipo"))
+                ponto = transformacao.Origin
+                if normal is None and eixo is not None:
+                    normal = eixo
+        if referencias is None or normal is None:
+            _pular(nome, u"referência da aninhada não reencontrada")
+            continue
+        vista_da_cota = _vista_para_normal(doc, normal, vista) or vista
+        try:
+            cota = doc.FamilyCreate.NewDimension(
+                vista_da_cota, Line.CreateBound(ponto, ponto + normal.Multiply(mm(100))), referencias)
+            if rotulo and parametros.get(rotulo) is not None:
+                cota.FamilyLabel = parametros[rotulo]
+            _aplicar_igualdade(cota, item, indice)
+        except Exception as erro:
+            _pular(nome, unicode(erro)[:140])  # noqa: F821
+    doc.Regenerate()
+
+
+def aplicar_sinalizadores(doc, especificacao):
+    u"""Baseada em plano de trabalho, sempre vertical, compartilhada, corta com
+    vazios — o leitor sempre gravou e o construtor nunca aplicou. Decide como a
+    família se hospeda quando for aninhada."""
+    mapa = {u"work_plane_based": BuiltInParameter.FAMILY_WORK_PLANE_BASED,
+            u"sempre_vertical": BuiltInParameter.FAMILY_ALWAYS_VERTICAL,
+            u"corta_com_vazios": BuiltInParameter.FAMILY_ALLOW_CUT_WITH_VOIDS,
+            u"compartilhada": BuiltInParameter.FAMILY_SHARED}
+    for rotulo, valor in ((especificacao.get(u"identidade") or {}).get(u"sinalizadores") or {}).items():
+        parametro = doc.OwnerFamily.get_Parameter(mapa[rotulo]) if rotulo in mapa else None
+        if parametro is None or parametro.IsReadOnly:
+            continue
+        try:
+            if bool(parametro.AsInteger()) != bool(valor):
+                parametro.Set(1 if valor else 0)
+        except Exception as erro:
+            _pular(u"sinalizador '{0}'".format(rotulo), unicode(erro)[:140])  # noqa: F821
+    # Os embutidos que o sinalizador cria (Default Elevation da família
+    # baseada em plano de trabalho) só aparecem depois da regeneração.
+    doc.Regenerate()
+
+
 def construir_conectores(doc, especificacao, formas, parametros, planos=None):
     u"""Conectores de tubo nas faces planas (schema 0.3.0; sonda S9 da G5).
 
@@ -1355,6 +1884,8 @@ def construir_conectores(doc, especificacao, formas, parametros, planos=None):
             plano = (planos or {}).get(item[u"face"][u"plano"])
             referencia_hospedeira = _face_de_apoio_no_plano(doc, plano, item[u"face"]) \
                 if plano is not None else None
+        elif item[u"face"].get(u"aninhada") is not None:
+            referencia_hospedeira = _face_da_aninhada(doc, item[u"face"])
         else:
             forma = formas.get(item[u"face"][u"forma"])
             face = _face_por_endereco(forma, item[u"face"]) if forma is not None else None
@@ -1434,6 +1965,9 @@ def _aplicar_alinhamentos_elegiveis(doc, vista, especificacao, planos, formas, a
 
         pendente = False
         for endereco in item[u"referencias"]:
+            if endereco[u"tipo"] == u"aninhada" and endereco[u"instancia"] not in _ANINHADAS_CRIADAS:
+                pendente = True
+                break
             if endereco[u"tipo"] in (u"face", u"esboco") and endereco[u"forma"] not in formas:
                 pendente = True
                 break
@@ -1455,7 +1989,7 @@ def _aplicar_alinhamentos_elegiveis(doc, vista, especificacao, planos, formas, a
         # semântica correta de datum e a que a origem usa.
         enderecos = sorted(
             item[u"referencias"],
-            key=lambda endereco: 0 if endereco[u"tipo"] == u"plano" else 1,
+            key=lambda endereco: 0 if endereco[u"tipo"] in (u"plano", u"nivel") else 1,
         )
 
         resolvidas = []
@@ -1475,6 +2009,8 @@ def _aplicar_alinhamentos_elegiveis(doc, vista, especificacao, planos, formas, a
         datum = enderecos[0]
         if datum[u"tipo"] == u"plano" and planos.get(datum[u"nome"]) is not None:
             normal_datum = planos[datum[u"nome"]].Normal
+        elif datum[u"tipo"] == u"nivel":
+            normal_datum = XYZ.BasisZ  # nível só aparece como linha numa elevação
         else:
             normal_datum = _vetor(datum.get(u"normal") or [1.0, 0.0, 0.0])
         vista_do_alinhamento = _vista_paralela_ao_esboco(doc, formas, enderecos, vista) or \
@@ -1482,8 +2018,12 @@ def _aplicar_alinhamentos_elegiveis(doc, vista, especificacao, planos, formas, a
         try:
             doc.FamilyCreate.NewAlignment(vista_do_alinhamento, resolvidas[0], resolvidas[1])
         except Exception as erro:
-            _pular(u"alinhamento #{0}".format(indice), unicode(erro)[:140])  # noqa: F821
-            continue
+            # Plano "Weak/Strong Reference" de aninhada: a ordem da lista no
+            # destino pode não ser a da origem (anel da Ultrapex). Tenta os
+            # outros planos do mesmo tipo; só o coplanar aceita o alinhamento.
+            if not _alinhar_com_outro_plano_da_aninhada(doc, vista_do_alinhamento, enderecos, resolvidas):
+                _pular(u"alinhamento #{0}".format(indice), unicode(erro)[:140])  # noqa: F821
+                continue
         aplicou = True
 
     if aplicou:
@@ -1665,6 +2205,8 @@ def _aplicar_valores_do_tipo(gerenciador, tipo, parametros, de_comprimento):
                 gerenciador.Set(parametro, _material_por_nome(_DOC_EM_CONSTRUCAO[0], valor[u"material"]))
             elif isinstance(valor, dict) and valor.get(u"imagem"):
                 gerenciador.Set(parametro, _imagem_por_nome(_DOC_EM_CONSTRUCAO[0], valor[u"imagem"]))
+            elif valor == -1:
+                pass  # ElementId inválido = "Por categoria", o padrão do parâmetro novo
             else:
                 # StorageType.ElementId (Imagem, outro elemento...)
                 _pular(u"valor '{0}' do tipo '{1}'".format(nome, tipo[u"nome"]),
@@ -1821,19 +2363,16 @@ def _restaurar_tipo_corrente(doc, nome):
 
 # --------------------------------------------------------------------------
 
-def principal():
-    caminho_spec = rfaspec.env("RFADG_SPEC", obrigatorio=True)
-    destino = rfaspec.env("RFADG_SAIDA", obrigatorio=True)
-    template = rfaspec.env("RFADG_TEMPLATE", obrigatorio=True)
-
-    especificacao = rfaspec.ler_json(caminho_spec)
-
+def construir_familia(app, template, especificacao, destino):
+    u"""Constrói a família do spec e salva em `destino` (as aninhadas antes)."""
     if especificacao[u"versao_schema"] not in rfaspec.SCHEMAS_ACEITOS:
         raise ValueError(u"Schema {0} não suportado (aceitos: {1}).".format(
             especificacao[u"versao_schema"], u", ".join(rfaspec.SCHEMAS_ACEITOS)))
 
-    app = _obter_app()
+    caminhos_aninhadas = construir_familias_aninhadas(app, template, especificacao)
     doc = app.NewFamilyDocument(template)
+    _ANINHADAS_CRIADAS.clear()
+    _NOME_NO_DESTINO.clear()
     _DOC_EM_CONSTRUCAO[0] = doc
     _MATERIAIS_DO_SPEC.clear()
     _MATERIAIS_DO_SPEC.update(especificacao.get(u"materiais") or {})
@@ -1849,6 +2388,7 @@ def principal():
         # Categoria antes de tudo: trocá-la depois de existir geometria e
         # parâmetros é bem mais arriscado.
         ajustar_categoria(doc, especificacao)
+        aplicar_sinalizadores(doc, especificacao)
         # Part Type antes dos parâmetros: os embutidos de Transição (Offset
         # Width/Height da luva de redução) só passam a existir depois dele.
         aplicar_tipo_de_peca(doc, especificacao)
@@ -1866,6 +2406,10 @@ def principal():
         formas = construir_formas(doc, vista, especificacao, planos, parametros)
         construir_cotas_radiais(doc, vista, especificacao, formas, parametros)
         construir_cotas_de_esboco(doc, vista, especificacao, formas, planos, parametros)
+        congelar_esbocos_livres(doc, vista, especificacao, formas)
+        if especificacao.get(u"aninhadas"):
+            construir_aninhadas(doc, especificacao, planos, formas, parametros, caminhos_aninhadas)
+            construir_travas_de_aninhadas(doc, vista, especificacao, planos, formas, parametros)
         aplicar_tipo_de_peca(doc, especificacao)
         construir_conectores(doc, especificacao, formas, parametros, planos)
         construir_combinacoes(doc, especificacao, formas)
@@ -1893,8 +2437,16 @@ def principal():
 
     doc.SaveAs(destino)
     doc.Close(False)
-
     log(u"Família reconstruída salva em {0}".format(destino))
+
+
+def principal():
+    caminho_spec = rfaspec.env("RFADG_SPEC", obrigatorio=True)
+    destino = rfaspec.env("RFADG_SAIDA", obrigatorio=True)
+    template = rfaspec.env("RFADG_TEMPLATE", obrigatorio=True)
+
+    especificacao = rfaspec.ler_json(caminho_spec)
+    construir_familia(_obter_app(), template, especificacao, destino)
     log(u"Itens não reproduzidos: {0}".format(len(_NAO_REPRODUZIDO)))
 
     relatorio = rfaspec.env("RFADG_RELATORIO")

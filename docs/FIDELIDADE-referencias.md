@@ -35,6 +35,7 @@ aninhadas; travas de linha de esboço.
 | S11 + S12. Travas de esboço, EQ, conector em plano | **6** · **7 de 7 tipos exatos** | **8** · 7/7 travas | **8** | **10** | **8** · conectores 3/3 |
 | S13. Cota radial na vista do esboço, cota angular | **0** · cotas rotuladas 26/26 | **7** | **7** · cotas 2/2 | **9** · cotas 2/2 | **8** |
 | S14. Embutidos pelo BuiltInParameter, Type Image, nome " ", sheetLength | **0** | **0** | **0** | **0** | **0** |
+| Aninhadas (S15–S18). Com a geometria das aninhadas medida | **0** · 12/12 instâncias, **9/9 conectores**, 31/31 cotas | **0** · 2/2 anéis | **0** · 2/2 | **0** · 2/2 (anel em DN 16 e 20) | **0** · 3/3 |
 
 Geometria própria da Ultrapex: **igual** (0,0% em extensão e volume) nas 4. Conectores: 2 → 2 no joelho e nas
 luvas, 3 → 3 no tê. A Solaris sai com extensão e volume iguais nos 7 tipos (200 a 1000 L).
@@ -88,14 +89,41 @@ a adaptação do raio (registrada de propósito) e o tipo " " recriado como "Pad
 ligado pela API não redimensiona a conexão, mas o tê ORIGINAL no 2024 faz o mesmo. Então a convertida se
 comporta igual, e o teste de redimensionamento pela API é inconclusivo (falta conferir pela interface).
 
+## Famílias aninhadas (19/10)
+
+Executado o plano de `docs/PLANO-aninhadas-e-travas-de-esboco.md`:
+
+- **Leitor**: cada `FamilyInstance` (família, tipo, ponto, eixos, espelhada, hospedeiro em plano ou face de
+  forma, associações, valores de instância próprios); a família aninhada é aberta com `EditFamily` e lida pelo
+  mesmo leitor (recursão até 3 níveis, estado global guardado e restaurado). Referência a aninhada em cota e
+  alinhamento vai por `GetReferenceType` + posição na lista; conector numa face de aninhada vai pela face.
+  A medição `medicoes_com_aninhadas` soma a geometria das instâncias (régua da Rota B intocada).
+- **Construtor**: constrói as aninhadas antes (de dentro para fora, `.rfa` temporário), `LoadFamily`, coloca
+  (plano, face plana ou curva, solta), espelha/gira/move até a transformação da origem, aplica valores e
+  associações, depois as travas e cotas que tocam aninhadas e os conectores nas faces delas. Sinalizadores
+  (baseada em plano de trabalho etc.) passam a ser aplicados.
+
+O que foi preciso descobrir no caminho (cada família aninhada também passa sozinha pela ida e volta):
+
+| Achado | Prova |
+|---|---|
+| Os bocais têm comprimento por **instância**: sem os valores de instância, os 9 conectores não achavam face | 9 → 9 conectores |
+| Letras do logo em **NURBS** | grau, nós, pontos de controle e pesos; logo exato |
+| **Cotas automáticas de esboço** (Automatic Sketch Dimensions): com qualquer cota rotulada na família, o Revit prende o esboço às referências mais próximas e recria se apagadas (S17/S18). O sextavado dos bocais (polígono rígido na origem) passava a seguir o diâmetro | esboço sem nenhuma restrição na origem tem os vértices travados nos planos centrais; o Revit retira as automáticas (S18-E: 10 → 0) |
+| Cotas de esboço sem rótulo nem trava **comandam** o perfil (cota de valor 0 entre ponta e plano = alinhamento) | BOCAIS exato nos 2 tipos |
+| O **eixo** da revolução é linha do esboço fora do perfil; cotado a um plano, move a revolução | endereçado e casado pela geometria |
+| A mescla (blend) nasce com a base normalizada ao plano do esboço | deslocamentos regravados depois da criação |
+| Alinhamento com o **nível** de referência só nasce numa elevação | âncora e vista corrigidas |
+| Plano "Weak Reference" de aninhada muda de posição na lista | o alinhamento tenta os planos do mesmo tipo até o coplanar |
+| Cota de valor 0 entre pontas **distintas** (anel) deformava o anel fora do DN do tipo | lacuna; anel exato em DN 16, 20 e 32 |
+
 ## O que ainda falta
 
-- os 9 bocais da Solaris (e seus conectores) e o logo são famílias aninhadas → plano em
-  `docs/PLANO-aninhadas-e-travas-de-esboco.md` (decisão do José: por último; não executado);
-- os anéis das conexões Ultrapex também são aninhados;
+- recriar as duas referências pelo gerador (as peças estão prontas);
+- famílias com aninhada compartilhada, aninhada de aninhada e hospedeiro em face inclinada não apareceram
+  nestas referências: o código cobre, mas sem prova;
 
 ## Próximo
 
-1. Aninhadas (plano pronto).
-2. Recriar as duas pelo gerador com estas peças à mão (tabela de consulta e conector por diâmetro já servem às
+1. Recriar as duas pelo gerador com estas peças à mão (tabela de consulta e conector por diâmetro já servem às
    conexões da Tigre: uma família com todos os DN, tamanho pelo tubo).

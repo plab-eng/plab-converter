@@ -1,4 +1,6 @@
-# Plano — famílias aninhadas e travas de esboço (para executar depois)
+# Plano — famílias aninhadas e travas de esboço
+
+> **Executado em 19/10/2026** (as duas partes). Resultado e achados em `docs/FIDELIDADE-referencias.md`.
 
 > Escrito em 18/10/2026, ao fim da rodada de fidelidade contra as referências Solaris e Ultrapex
 > (`docs/FIDELIDADE-referencias.md`). Decisão do José: aninhadas por último e **não executar nesta rodada**

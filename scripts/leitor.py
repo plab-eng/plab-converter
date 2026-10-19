@@ -30,7 +30,7 @@ from Autodesk.Revit.DB import (  # noqa: E402
     FilteredElementCollector, ReferencePlane, Dimension, Extrusion, Revolution,
     Sweep, Blend, SweptBlend, GenericForm, GeomCombination, Line, Arc,
     PlanarFace, BuiltInCategory, BuiltInParameter, StorageType,
-    ConnectorElement, ElementId, Options, PartType, Solid,
+    ConnectorElement, ElementId, Options, PartType, Solid, FamilyInstance, XYZ,
 )
 from System import Enum  # noqa: E402
 
@@ -384,6 +384,21 @@ def _curva_para_dicionario(curva):
             u"parametro_inicial": curva.GetEndParameter(0),
             u"parametro_final": curva.GetEndParameter(1),
         }
+    if type(curva).__name__ == "NurbSpline":
+        # Logo da Solaris: letras em NURBS. Grau, nós, pontos de controle e
+        # pesos reproduzem a curva exata (não uma aproximação por pontos).
+        return {
+            u"tipo": u"nurbs",
+            u"grau": int(curva.Degree),
+            u"nos": [float(v) for v in curva.Knots],
+            u"controle": [_ponto(p) for p in curva.CtrlPoints],
+            u"pesos": [float(v) for v in curva.Weights],
+            u"parametro_inicial": curva.GetEndParameter(0),
+            u"parametro_final": curva.GetEndParameter(1),
+            u"inicio": _ponto(curva.GetEndPoint(0)),
+            u"fim": _ponto(curva.GetEndPoint(1)),
+            u"meio": _ponto(curva.Evaluate(0.5, True)),
+        }
     # Falha em voz alta: uma curva silenciosamente ignorada vira família errada.
     # Quem chama isola a forma e transforma isto em lacuna — famílias reais têm
     # splines e elipses, e perder a forma inteira com registro é honesto;
@@ -522,6 +537,18 @@ def _mapear_curvas_de_esboco(extrusao, indice, mapa):
                     mapa[_id_valor(referencia.ElementId)] = (indice, numero_laco, numero_curva)
     except Exception:
         pass  # esboço ilegível já virou lacuna na leitura da forma
+    # O EIXO da revolução é uma linha do esboço fora do perfil. Cotado a um
+    # plano, ele move a revolução inteira (revolução pequena dos bocais da
+    # Solaris, a 12,5 mm de P3). Laço -1: o construtor casa pela geometria.
+    try:
+        for identificador in extrusao.Sketch.GetAllElements():
+            chave = _id_valor(identificador)
+            if chave not in mapa and isinstance(extrusao, Revolution):
+                elemento = extrusao.Document.GetElement(identificador)
+                if elemento is not None and type(elemento).__name__ in ("ModelLine", "ModelCurve"):
+                    mapa[chave] = (indice, -1, -1)
+    except Exception:
+        pass
 
 
 def _plano_de_esboco(esboco):
@@ -800,6 +827,42 @@ def _endereco_da_referencia(doc, referencia, indice_por_id, curvas_de_esboco=Non
             return None
         return {u"tipo": u"plano", u"nome": endereco}
 
+    if type(elemento).__name__ == "Level":
+        # O template de família tem um nível só (Ref. Level / Nível de referência).
+        return {u"tipo": u"nivel"}
+
+    if isinstance(elemento, FamilyInstance):
+        indice = _INDICE_ANINHADA.get(_id_valor(elemento.Id))
+        if indice is None:
+            return None
+        # Plano nomeado da aninhada (Center Left/Right...) pelo tipo de
+        # referência; o nome cobre os planos "Strong/Weak Reference".
+        try:
+            tipo_referencia = str(elemento.GetReferenceType(referencia))
+        except Exception:
+            tipo_referencia = None
+        try:
+            nome_referencia = rfaspec.para_unicode(elemento.GetReferenceName(referencia))
+        except Exception:
+            nome_referencia = None
+        if not tipo_referencia or tipo_referencia == u"NotAReference" and not nome_referencia:
+            return None
+        # Vários planos do mesmo tipo (Weak Reference sem nome, no anel da
+        # Ultrapex): a posição na lista de GetReferences, que segue a ordem de
+        # criação; o construtor recria os planos da aninhada na mesma ordem.
+        ordem = None
+        try:
+            from Autodesk.Revit.DB import FamilyInstanceReferenceType
+            estavel = referencia.ConvertToStableRepresentation(doc)
+            candidatas = list(elemento.GetReferences(getattr(FamilyInstanceReferenceType, tipo_referencia)))
+            for posicao, candidata in enumerate(candidatas):
+                if candidata.ConvertToStableRepresentation(doc) == estavel:
+                    ordem = posicao
+        except Exception:
+            ordem = None
+        return {u"tipo": u"aninhada", u"instancia": indice, u"ref_tipo": tipo_referencia,
+                u"ref_nome": nome_referencia or None, u"ref_ordem": ordem}
+
     no_esboco = (curvas_de_esboco or {}).get(_id_valor(elemento.Id))
     if no_esboco is not None:
         endereco = {u"tipo": u"esboco", u"forma": no_esboco[0],
@@ -879,6 +942,19 @@ def ler_combinacoes(doc, indice_por_id):
     return combinacoes, lacunas
 
 
+def _direcao_da_cota(dimensao):
+    u"""Direção da linha da cota linear. Entre duas PONTAS do esboço ela não se
+    deduz das referências: a cota do anel da Ultrapex mede na vertical entre
+    pontas afastadas 8 mm na horizontal."""
+    try:
+        curva = dimensao.Curve
+        if isinstance(curva, Line):
+            return _vetor(curva.Direction)
+    except Exception:
+        pass
+    return None
+
+
 def _segmentos_iguais(dimensao):
     u"""Cota de igualdade (EQ): é ela que centra o diâmetro da Solaris entre os
     dois planos; sem ela, só um lado anda e o diâmetro cresce em dobro."""
@@ -937,13 +1013,72 @@ def ler_cotas(doc, indice_por_id, curvas_de_esboco=None):
         # alinhamento esboço+plano, cota com plano rotulada ou travada, e cota
         # travada entre curvas do esboço. Cota solta do esboço (anotação, ou
         # as que o Revit cria sozinho) continua lacuna.
+        com_face = any(e.get(u"tipo") == u"face" for e in enderecos)
+        # Cota de valor 0, sem rótulo nem trava, entre curva do esboço e plano
+        # (bocais da Solaris): na origem o perfil segue o plano. Vira
+        # alinhamento, que a sonda S11 provou flexionar (V1 e V5).
+        com_nivel = any(e.get(u"tipo") == u"nivel" for e in enderecos)
+        if no_esboco and (com_plano or com_nivel) and not eh_restricao and not rotulada and not travada and \
+                forma_da_cota == u"Linear" and len(enderecos) == 2:
+            try:
+                zero = dimensao.Value is not None and abs(dimensao.Value) < 1e-9
+            except Exception:
+                zero = False
+            arco_sem_ponta = False
+            for referencia_bruta, endereco_lido in zip(list(dimensao.References), enderecos):
+                if endereco_lido.get(u"tipo") == u"esboco" and endereco_lido.get(u"ponta") is None:
+                    elemento_ref = doc.GetElement(referencia_bruta.ElementId)
+                    curva_ref = getattr(elemento_ref, "GeometryCurve", None)
+                    if curva_ref is not None and not isinstance(curva_ref, Line):
+                        arco_sem_ponta = True
+            if zero and arco_sem_ponta:
+                # A referência é o CENTRO do arco; o Revit não alinha arco com
+                # plano ("cannot be matched"). Fica como lacuna honesta.
+                lacunas.append({u"elemento_id": _id_valor(dimensao.Id), u"eh_restricao": False,
+                                u"motivo": u"cota de valor 0 até o centro de um arco"})
+                continue
+            if zero:
+                alinhamentos.append({u"referencias": enderecos, u"de_cota_zero": True})
+                continue
+        if no_esboco and not (com_plano or com_nivel or com_face) and forma_da_cota == u"Linear":
+            try:
+                zero_interna = dimensao.Value is not None and abs(dimensao.Value) < 1e-9
+            except Exception:
+                zero_interna = False
+            pontos = [e.get(u"ponto_mm") for e in enderecos if e.get(u"ponto_mm")]
+            # Valor 0 entre pontas DISTINTAS (anel da Ultrapex: 8 mm na
+            # horizontal, 0 na vertical). Recriada, ela prende o raio do anel
+            # (na direção deduzida) ou deforma tudo (na direção da origem):
+            # fica como lacuna. Pontas coincidentes (letras do logo) seguem.
+            distintas = len(pontos) == 2 and sum((a - b) ** 2 for a, b in zip(pontos[0], pontos[1])) > 1e-6
+            if zero_interna and distintas:
+                lacunas.append({u"elemento_id": _id_valor(dimensao.Id), u"eh_restricao": False,
+                                u"motivo": u"cota de valor 0 entre pontas distintas do esboço"})
+                continue
         # Angular: só entre duas curvas/planos (sem trava de ponta), rotulada ou
         # travada; o construtor recria pelo cruzamento das duas referências.
         linear = forma_da_cota == u"Linear"
         angular = forma_da_cota == u"Angular" and len(enderecos) == 2 and \
             not any(e.get(u"ponta") is not None for e in enderecos) and (rotulada or travada)
-        esboco_aceito = radial or angular or eh_restricao and com_plano or \
-            linear and (com_plano and (rotulada or travada) or travada)
+        # Cota do esboço COMANDA o perfil mesmo sem rótulo e sem trava: quando a
+        # referência se move, a curva anda para manter o valor (bocais da
+        # Solaris). Por isso toda cota linear do esboço é lida; o construtor
+        # apaga as que o Revit gera sozinho e recria exatamente estas.
+        # Cota SÓ entre curvas do esboço, sem rótulo nem trava, só mantém o
+        # desenho e não liga o perfil a nada que se mova: fica de fora (as 118
+        # das letras NURBS do logo da Solaris deformavam o logo inteiro).
+        interna_livre = linear and not (com_plano or com_nivel or com_face or rotulada or travada)
+        if interna_livre:
+            # Entre RETAS ela mantém o perfil (bocais: 45 e 50 mm entre linhas;
+            # sem elas -1,3% de volume num tipo). Só a que toca curva não reta
+            # (NURBS, arco das letras) fica de fora.
+            try:
+                interna_livre = any(not isinstance(getattr(doc.GetElement(r.ElementId), "GeometryCurve", None), Line)
+                                    for r in dimensao.References)
+            except Exception:
+                pass
+        esboco_aceito = radial or angular or eh_restricao and (com_plano or com_face or com_nivel) or \
+            linear and not interna_livre
         if incompleta or len(enderecos) < minimo or (no_esboco and not esboco_aceito):
             lacunas.append({
                 u"elemento_id": _id_valor(dimensao.Id),
@@ -970,6 +1105,7 @@ def ler_cotas(doc, indice_por_id, curvas_de_esboco=None):
             u"forma": forma_da_cota,
             u"travada": travada,
             u"iguais": _segmentos_iguais(dimensao),
+            u"direcao": _direcao_da_cota(dimensao),
         })
 
     return cotas, alinhamentos, lacunas
@@ -1013,6 +1149,24 @@ def _face_do_conector(doc, conector, indice_por_id):
                 projecao = face.Project(origem)
                 if projecao is not None and projecao.Distance < 1e-6:
                     return {u"forma": indice, u"normal": _vetor(face.FaceNormal)}
+    # Conector numa face de família ANINHADA (bocais da Solaris).
+    from Autodesk.Revit.DB import GeometryInstance
+    for instancia in FilteredElementCollector(doc).OfClass(FamilyInstance).ToElements():
+        indice = _INDICE_ANINHADA.get(_id_valor(instancia.Id))
+        if indice is None:
+            continue
+        for objeto in instancia.get_Geometry(opcoes) or []:
+            if not isinstance(objeto, GeometryInstance):
+                continue
+            for solido in objeto.GetInstanceGeometry():
+                if not isinstance(solido, Solid):
+                    continue
+                for face in solido.Faces:
+                    if not isinstance(face, PlanarFace) or not face.FaceNormal.IsAlmostEqualTo(direcao):
+                        continue
+                    projecao = face.Project(origem)
+                    if projecao is not None and projecao.Distance < 1e-6:
+                        return {u"aninhada": indice, u"normal": _vetor(face.FaceNormal), u"origem": _ponto(origem)}
     # Conector hospedado num PLANO de referência (tê da Ultrapex: nenhuma face
     # passa pela origem dos 3 conectores; cada um coincide com um plano).
     for plano in FilteredElementCollector(doc).OfClass(ReferencePlane).ToElements():
@@ -1108,7 +1262,231 @@ def _tipo_de_peca(doc):
         return None
 
 
-def extrair(doc):
+# --------------------------------------------------------------------------
+# Famílias aninhadas (plano em docs/PLANO-aninhadas-e-travas-de-esboco.md)
+# --------------------------------------------------------------------------
+
+_PROFUNDIDADE_MAXIMA = 3
+# id da FamilyInstance -> índice em `aninhadas` (para cotas, alinhamentos e
+# conectores que referenciam a instância).
+_INDICE_ANINHADA = {}
+
+
+def _nome_do_elemento(elemento):
+    # Family/FamilySymbol/ImageType.Name não são acessíveis no IronPython.
+    from Autodesk.Revit.DB import Element
+    return rfaspec.para_unicode(Element.Name.__get__(elemento))
+
+
+def _estado_global():
+    return (_DOC[0], dict(_MATERIAIS), dict(_IMAGENS), dict(_ENDERECO_DO_PLANO), dict(_INDICE_ANINHADA))
+
+
+def _restaurar_estado(estado):
+    _DOC[0] = estado[0]
+    for alvo, valor in zip((_MATERIAIS, _IMAGENS, _ENDERECO_DO_PLANO, _INDICE_ANINHADA), estado[1:]):
+        alvo.clear()
+        alvo.update(valor)
+
+
+def _hospedeiro_da_aninhada(doc, instancia, indice_por_id):
+    u"""Plano de referência ou face de forma onde a instância está hospedada."""
+    try:
+        referencia = instancia.HostFace
+    except Exception:
+        referencia = None
+    hospedeiro = instancia.Host
+    if hospedeiro is None:
+        return None
+    if isinstance(hospedeiro, ReferencePlane):
+        endereco = _ENDERECO_DO_PLANO.get(_id_valor(hospedeiro.Id))
+        return {u"tipo": u"plano", u"nome": endereco} if endereco else {u"tipo": u"ilegivel"}
+    # Face de forma (plana ou curva: o BOCAL2 da Solaris fica na face do corpo
+    # revolucionado). O construtor acha a face que contém o ponto da instância.
+    indice = indice_por_id.get(_id_valor(hospedeiro.Id))
+    if indice is not None:
+        return {u"tipo": u"face_da_forma", u"forma": indice, u"ponto": _ponto(instancia.GetTransform().Origin)}
+    return {u"tipo": u"ilegivel", u"classe": type(hospedeiro).__name__}
+
+
+def _associacoes_da_instancia(gerenciador, instancia):
+    associacoes = []
+    for parametro in instancia.Parameters:
+        try:
+            associado = gerenciador.GetAssociatedFamilyParameter(parametro)
+        except Exception:
+            associado = None
+        if associado is None:
+            continue
+        try:
+            embutido = str(parametro.Definition.BuiltInParameter)
+        except Exception:
+            embutido = None
+        associacoes.append({
+            u"parametro": rfaspec.para_unicode(parametro.Definition.Name),
+            u"embutido": embutido if embutido and embutido != u"INVALID" else None,
+            u"da_familia": rfaspec.para_unicode(associado.Definition.Name),
+        })
+    return associacoes
+
+
+def _valores_da_instancia(gerenciador, instancia):
+    u"""Valores de instância próprios da aninhada (não associados à hospedeira).
+
+    Parâmetro de instância da família aninhada vale POR instância: os bocais
+    da Solaris têm o comprimento definido em cada instância. Só os de usuário
+    (o embutido de posição já vem pela transformação).
+    """
+    valores = []
+    for parametro in instancia.Parameters:
+        try:
+            if parametro.IsReadOnly or not parametro.HasValue:
+                continue
+            definicao = parametro.Definition
+            try:
+                if str(definicao.BuiltInParameter) != u"INVALID":
+                    continue
+            except Exception:
+                pass
+            if gerenciador.GetAssociatedFamilyParameter(parametro) is not None:
+                continue
+            armazenamento = parametro.StorageType
+            item = {u"parametro": rfaspec.para_unicode(definicao.Name)}
+            if armazenamento == StorageType.Double:
+                comprimento = rfaspec.eh_comprimento(_forge_id(definicao.GetDataType()))
+                item[u"valor"] = para_mm(parametro.AsDouble()) if comprimento else parametro.AsDouble()
+                item[u"comprimento"] = comprimento
+            elif armazenamento == StorageType.Integer:
+                item[u"valor"] = parametro.AsInteger()
+            elif armazenamento == StorageType.String:
+                item[u"valor"] = rfaspec.para_unicode(parametro.AsString())
+            elif armazenamento == StorageType.ElementId:
+                material = _material(parametro.AsElementId())
+                if material is None:
+                    continue
+                item[u"valor"] = material
+            else:
+                continue
+            valores.append(item)
+        except Exception:
+            continue
+    return valores
+
+
+def ler_aninhadas(doc, indice_por_id, profundidade):
+    u"""Instâncias aninhadas e, para cada família distinta, a FamilySpec dela.
+
+    A família aninhada é aberta com EditFamily e lida pelo próprio leitor
+    (recursão); o estado global do leitor é guardado e restaurado em volta.
+    `GetSubComponentIds()` só devolve as compartilhadas: o coletor de
+    FamilyInstance pega todas (armadilha do CLAUDE.md §10).
+    """
+    _INDICE_ANINHADA.clear()
+    gerenciador = doc.FamilyManager
+    instancias = sorted(FilteredElementCollector(doc).OfClass(FamilyInstance).ToElements(),
+                        key=lambda e: _id_valor(e.Id))
+    familias, por_nome, aninhadas, lacunas = [], {}, [], []
+    for instancia in instancias:
+        simbolo = instancia.Symbol
+        familia = simbolo.Family
+        nome_familia = _nome_do_elemento(familia)
+        if nome_familia not in por_nome:
+            if profundidade >= _PROFUNDIDADE_MAXIMA:
+                lacunas.append({u"elemento_id": _id_valor(instancia.Id),
+                                u"motivo": u"aninhada além de {0} níveis".format(_PROFUNDIDADE_MAXIMA)})
+                continue
+            estado = _estado_global()
+            sub = None
+            try:
+                sub = doc.EditFamily(familia)
+                especificacao = extrair(sub, profundidade + 1)
+            except Exception as erro:
+                especificacao = None
+                lacunas.append({u"elemento_id": _id_valor(instancia.Id),
+                                u"motivo": u"família aninhada '{0}' ilegível: {1}".format(
+                                    nome_familia, rfaspec.para_unicode(unicode(erro))[:120])})  # noqa: F821
+            finally:
+                _restaurar_estado(estado)
+                if sub is not None:
+                    sub.Close(False)
+            if especificacao is None:
+                continue
+            por_nome[nome_familia] = len(familias)
+            familias.append({u"nome": nome_familia, u"especificacao": especificacao})
+        transformacao = instancia.GetTransform()
+        visivel = instancia.get_Parameter(BuiltInParameter.IS_VISIBLE_PARAM)
+        _INDICE_ANINHADA[_id_valor(instancia.Id)] = len(aninhadas)
+        aninhadas.append({
+            u"familia": por_nome[nome_familia],
+            u"tipo": rfaspec.para_unicode(simbolo.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM).AsString()),
+            u"ponto": _ponto(transformacao.Origin),
+            u"eixo_x": _vetor(transformacao.BasisX),
+            u"eixo_y": _vetor(transformacao.BasisY),
+            u"eixo_z": _vetor(transformacao.BasisZ),
+            u"espelhada": bool(instancia.Mirrored),
+            u"hospedeiro": _hospedeiro_da_aninhada(doc, instancia, indice_por_id),
+            u"associacoes": _associacoes_da_instancia(gerenciador, instancia),
+            u"valores": _valores_da_instancia(gerenciador, instancia),
+            u"visivel": bool(visivel.AsInteger()) if visivel is not None else None,
+        })
+    return familias, aninhadas, lacunas
+
+
+def _medir_com_aninhadas(doc):
+    u"""Extensão e volume por tipo INCLUINDO a geometria das aninhadas.
+
+    A assinatura da régua (rfaspec.medir_por_tipo) só mede as formas da
+    própria família; esta é a medida que diz se as aninhadas vieram certas.
+    """
+    from Autodesk.Revit.DB import Transaction, GeometryInstance, ViewDetailLevel
+    gerenciador = doc.FamilyManager
+    saida = {}
+    opcoes = Options()
+    # Conexões mostram as peças só no Fino; a mesma opção nos dois lados.
+    opcoes.DetailLevel = ViewDetailLevel.Fine
+    for tipo in list(gerenciador.Types):
+        if not tipo.Name:
+            continue
+        transacao = Transaction(doc, u"medir com aninhadas")
+        transacao.Start()
+        try:
+            gerenciador.CurrentType = tipo
+            doc.Regenerate()
+            volume, minimos, maximos = 0.0, None, None
+            # As formas pela mesma coleta da régua (que já trata o corte de
+            # vazio pelo GeomCombination) + a geometria das instâncias.
+            objetos = list(rfaspec._coletar_solidos(doc)[0])
+            for elemento in FilteredElementCollector(doc).OfClass(FamilyInstance).ToElements():
+                geometria = elemento.get_Geometry(opcoes)
+                if geometria is None:
+                    continue
+                for objeto in geometria:
+                    if isinstance(objeto, GeometryInstance):
+                        objetos.extend(list(objeto.GetInstanceGeometry()))
+            for objeto in objetos:
+                if not isinstance(objeto, Solid) or objeto.Volume <= 0:
+                    continue
+                volume += objeto.Volume
+                caixa = objeto.GetBoundingBox()
+                for x in (caixa.Min.X, caixa.Max.X):
+                    for y in (caixa.Min.Y, caixa.Max.Y):
+                        for z in (caixa.Min.Z, caixa.Max.Z):
+                            p = caixa.Transform.OfPoint(XYZ(x, y, z))
+                            if minimos is None:
+                                minimos, maximos = [p.X, p.Y, p.Z], [p.X, p.Y, p.Z]
+                            for eixo, valor in enumerate((p.X, p.Y, p.Z)):
+                                minimos[eixo] = min(minimos[eixo], valor)
+                                maximos[eixo] = max(maximos[eixo], valor)
+            if minimos is not None:
+                saida[rfaspec.para_unicode(tipo.Name)] = {
+                    u"extensao_mm": [para_mm(maximos[i] - minimos[i]) for i in range(3)],
+                    u"volume_mm3": rfaspec.interno_para_mm3(volume)}
+        finally:
+            transacao.RollBack()
+    return saida
+
+
+def extrair(doc, profundidade=0):
     if not doc.IsFamilyDocument:
         raise ValueError(
             u"O documento aberto não é uma família. Recebido: {0}".format(doc.Title)
@@ -1120,6 +1498,8 @@ def extrair(doc):
     parametros, tipos = ler_parametros(doc)
     planos = ler_planos_de_referencia(doc)  # antes das cotas: define os endereços
     formas, indice_por_id, lacunas_de_forma, curvas_de_esboco = ler_formas(doc)
+    # Antes das cotas: define o índice das instâncias que elas referenciam.
+    familias_aninhadas, aninhadas, lacunas_de_aninhada = ler_aninhadas(doc, indice_por_id, profundidade)
     cotas, alinhamentos, lacunas = ler_cotas(doc, indice_por_id, curvas_de_esboco)
     # 0.2.0 só quando há cota no esboço: o resto do formato não mudou.
     no_esboco = any(endereco.get(u"tipo") == u"esboco"
@@ -1127,7 +1507,8 @@ def extrair(doc):
     combinacoes, lacunas_de_corte = ler_combinacoes(doc, indice_por_id)
     conectores, lacunas_de_conector = ler_conectores(doc, indice_por_id)
     tabelas, lacunas_de_tabela = ler_tabelas_de_consulta(doc)
-    lacunas = lacunas_de_forma + lacunas + lacunas_de_corte + lacunas_de_conector + lacunas_de_tabela
+    lacunas = lacunas_de_forma + lacunas_de_aninhada + lacunas + lacunas_de_corte + lacunas_de_conector + \
+        lacunas_de_tabela
     identidade = ler_identidade(doc)
     identidade[u"part_type"] = _tipo_de_peca(doc)
     if conectores:
@@ -1157,10 +1538,13 @@ def extrair(doc):
         u"tabelas_de_consulta": tabelas,
         u"materiais": dict(_MATERIAIS),
         u"imagens": dict(_IMAGENS),
+        u"familias_aninhadas": familias_aninhadas,
+        u"aninhadas": aninhadas,
         # Assinatura geométrica da origem, tipo a tipo. É contra ISTO que o
         # validador compara no destino — assim ele não precisa saber nada
         # sobre a geometria da família, só se ela reproduz a mesma coisa.
         u"medicoes": rfaspec.medir_por_tipo(doc),
+        u"medicoes_com_aninhadas": _medir_com_aninhadas(doc) if aninhadas else None,
         # Tudo que o leitor viu mas não soube endereçar. Nunca silencioso:
         # uma lacuna não reportada vira família incompleta entregue como boa.
         u"lacunas": lacunas,
